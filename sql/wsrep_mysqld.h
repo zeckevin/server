@@ -98,6 +98,7 @@ extern ulong       wsrep_running_rollbacker_threads;
 extern bool        wsrep_new_cluster;
 extern bool        wsrep_gtid_mode;
 extern uint32      wsrep_gtid_domain_id;
+extern my_bool     wsrep_strict_ddl;
 
 enum enum_wsrep_reject_types {
   WSREP_REJECT_NONE,    /* nothing rejected */
@@ -108,7 +109,7 @@ enum enum_wsrep_reject_types {
 enum enum_wsrep_OSU_method {
     WSREP_OSU_TOI,
     WSREP_OSU_RSU,
-    WSREP_OSU_NONE,
+    WSREP_OSU_NONE
 };
 
 enum enum_wsrep_sync_wait {
@@ -351,9 +352,15 @@ extern PSI_thread_key key_wsrep_applier;
 
 struct TABLE_LIST;
 class Alter_info;
+struct HA_CREATE_INFO;
+
 int wsrep_to_isolation_begin(THD *thd, const char *db_, const char *table_,
                              const TABLE_LIST* table_list,
-                             Alter_info* alter_info= NULL);
+                             const Alter_info* alter_info= NULL,
+                             const HA_CREATE_INFO* create_info= NULL);
+
+bool wsrep_should_replicate_ddl(THD* thd, const enum legacy_db_type db_type);
+bool wsrep_should_replicate_ddl_iterate(THD* thd, const TABLE_LIST* table_list);
 
 void wsrep_to_isolation_end(THD *thd);
 
