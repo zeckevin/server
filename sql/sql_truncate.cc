@@ -330,7 +330,10 @@ bool Sql_cmd_truncate_table::lock_table(THD *thd, TABLE_LIST *table_ref,
     if (WSREP(thd) &&
 	hton != view_pseudo_hton &&
 	!wsrep_should_replicate_ddl(thd, hton->db_type))
+    {
+      tdc_release_share(share);
       DBUG_RETURN(TRUE);
+    }
 #endif
 
     tdc_release_share(share);
