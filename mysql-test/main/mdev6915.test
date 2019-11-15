@@ -1,0 +1,87 @@
+--echo #
+--echo #  Packed addon fields
+--echo #
+
+--source include/have_sequence.inc
+
+CREATE TABLE t1(a int, b varchar(255), c varchar(255));
+INSERT into t1 SELECT seq, repeat('a', seq%10), repeat('b', seq%10)
+               FROM seq_1_to_10000;
+
+
+--echo #
+--echo # All records should fit in memory after packing
+--echo #
+
+SET sort_buffer_size= (526+8)*500;
+SET optimizer_trace=1;
+
+FLUSH STATUS;
+let $query= SELECT * FROM t1 ORDER BY a DESC;
+eval $query;
+SHOW STATUS LIKE '%sort%';
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.filesort_summary')) from INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+
+SET sort_buffer_size= default;
+
+--echo #
+--echo # Records written to disk, tmp_files < MERGEBUFF2
+--echo #
+
+SET sort_buffer_size= (526+8)*150;
+FLUSH STATUS;
+
+eval $query;
+SHOW STATUS LIKE '%sort%';
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.filesort_summary')) from INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+
+FLUSH STATUS;
+eval $query;
+SHOW STATUS LIKE '%sort%';
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.filesort_summary')) from INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+
+SET sort_buffer_size= default;
+show variables like '%sort_buffer_size%';
+
+--echo #
+--echo # Records written to disk, tmp_files >= MERGEBUFF2
+--echo #
+
+SET sort_buffer_size= (526+8)*16;
+FLUSH STATUS;
+
+eval $query;
+SHOW STATUS LIKE '%sort%';
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.filesort_summary')) from INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+
+FLUSH STATUS;
+eval $query;
+SHOW STATUS LIKE '%sort%';
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.filesort_summary')) from INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+
+SET sort_buffer_size= default;
+show variables like '%sort_buffer_size%';
+
+--echo #
+--echo # With LIMIT
+--echo #
+
+SET sort_buffer_size= (526+8)*400;
+FLUSH STATUS;
+
+let $query= SELECT * FROM t1 ORDER BY a  limit 100;
+eval $query;
+SHOW STATUS LIKE '%sort%';
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.filesort_summary')) from INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+
+
+SET sort_buffer_size= (526+8)*700;
+FLUSH STATUS;
+
+let $query= SELECT * FROM t1 ORDER BY a  limit 1000;
+eval $query;
+SHOW STATUS LIKE '%sort%';
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.filesort_summary')) from INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+
+DROP TABLE t1;
+
