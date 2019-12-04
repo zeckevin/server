@@ -114,6 +114,47 @@ public:
 };
 
 
+class Share_acquire
+{
+public:
+  TABLE_SHARE *share;
+
+  Share_acquire() : share(NULL) {}
+  Share_acquire(THD *thd, TABLE_LIST &tl);
+  Share_acquire(const Share_acquire &src)= delete;
+
+  // NB: noexcept is required for STL containers
+  Share_acquire(Share_acquire &&src) noexcept :
+    share(src.share)
+  {
+    src.share= NULL;
+  }
+  ~Share_acquire()
+  {
+    if (share)
+      tdc_release_share(share);
+  }
+  bool is_error(THD *thd);
+  void release()
+  {
+    if (share)
+    {
+      tdc_release_share(share);
+      share= NULL;
+    }
+  }
+  // NB: "operator<" is required for std::set
+  bool operator< (const Share_acquire &rhs) const
+  {
+    if (share < rhs.share)
+      return -1;
+    if (share > rhs.share)
+      return 1;
+    return 0;
+  }
+};
+
+
 /**
   Create a table cache key for non-temporary table.
 
