@@ -2681,6 +2681,34 @@ class Item_func_get_lock :public Item_long_func
   { return get_item_copy<Item_func_get_lock>(thd, this); }
 };
 
+
+class Item_func_release_all_locks :public Item_long_func
+{
+  bool check_arguments() const
+  { return args[0]->check_type_general_purpose_string(func_name()); }
+  String value;
+public:
+  Item_func_release_all_locks(THD *thd, Item *a): Item_long_func(thd, a) {}
+  longlong val_int();
+  const char *func_name() const { return "release_all_locks"; }
+  bool fix_length_and_dec() { max_length= 1; maybe_null= 1; return FALSE; }
+  table_map used_tables() const
+  {
+    return used_tables_cache | RAND_TABLE_BIT;
+  }
+  bool const_item() const { return 0; }
+  bool is_expensive() { return 1; }
+  bool check_vcol_func_processor(void *arg)
+  {
+    return mark_unsupported_function(func_name(), "()", arg, VCOL_NON_DETERMINISTIC);
+  }
+  Item *get_copy(THD *thd)
+  { return get_item_copy<Item_func_release_all_locks>(thd, this); }
+};
+
+
+
+
 class Item_func_release_lock :public Item_long_func
 {
   bool check_arguments() const
