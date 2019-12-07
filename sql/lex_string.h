@@ -18,6 +18,8 @@
 #ifndef LEX_STRING_INCLUDED
 #define LEX_STRING_INCLUDED
 
+#include "sql_alloc.h"
+
 
 typedef struct st_mysql_const_lex_string LEX_CSTRING;
 
@@ -40,6 +42,43 @@ class Lex_cstring : public LEX_CSTRING
     DBUG_ASSERT(start <= end);
     str= start;
     length= end - start;
+  }
+  Lex_cstring(const LEX_CSTRING &src)
+  {
+    str= src.str;
+    length= src.length;
+  }
+  bool strdup(MEM_ROOT *mem_root, const char *_str, size_t _len)
+  {
+    if (!_str)
+    {
+      str= NULL;
+      length= 0;
+      return false;
+    }
+    length= _len;
+    str= strmake_root(mem_root, _str, length);
+    return !str;
+  }
+  bool strdup(MEM_ROOT *mem_root, const char *_str)
+  {
+    if (!_str)
+    {
+      str= NULL;
+      length= 0;
+      return false;
+    }
+    return strdup(mem_root, _str, strlen(_str));
+  }
+  bool strdup(MEM_ROOT *mem_root, const Lex_cstring &_str)
+  {
+    if (!_str.str)
+    {
+      str= NULL;
+      length= 0;
+      return false;
+    }
+    return strdup(mem_root, _str.str, _str.length);;
   }
   void set(const char *_str, size_t _len)
   {

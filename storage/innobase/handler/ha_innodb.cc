@@ -15321,29 +15321,28 @@ ha_innobase::get_foreign_key_create_info(void)
 Maps a InnoDB foreign key constraint to a equivalent MySQL foreign key info.
 @return pointer to foreign key info */
 static
-FOREIGN_KEY_INFO*
+FK_info*
 get_foreign_key_info(
 /*=================*/
 	THD*		thd,	/*!< in: user thread handle */
 	dict_foreign_t* foreign)/*!< in: foreign key constraint */
 {
-	FOREIGN_KEY_INFO	f_key_info;
-	FOREIGN_KEY_INFO*	pf_key_info;
-	uint			i = 0;
-	size_t			len;
-	char			tmp_buff[NAME_LEN+1];
-	char			name_buff[NAME_LEN+1];
-	const char*		ptr;
-	LEX_CSTRING*		referenced_key_name;
-	LEX_CSTRING*		name = NULL;
+	uint	     i = 0;
+	size_t	     len;
+	char	     tmp_buff[NAME_LEN + 1];
+	char	     name_buff[NAME_LEN + 1];
+	const char*  ptr;
+	Lex_cstring* name = NULL;
 
-	if (dict_table_t::is_temporary_name(foreign->foreign_table_name)) {
- 		return NULL;
- 	}
+	FK_info* pf_key_info = new (get_thd_memroot(thd)) FK_info();
+	if (!pf_key_info) {
+		return NULL;
+	}
+	FK_info& f_key_info = *pf_key_info;
 
 	ptr = dict_remove_db_name(foreign->id);
-	f_key_info.foreign_id = thd_make_lex_string(
-		thd, 0, ptr, strlen(ptr), 1);
+	if (f_key_info.foreign_id.strdup(get_thd_memroot(thd), ptr))
+		return NULL;
 
 	/* Name format: database name, '/', table name, '\0' */
 
@@ -15354,14 +15353,14 @@ get_foreign_key_info(
 	tmp_buff[len] = 0;
 
 	len = filename_to_tablename(tmp_buff, name_buff, sizeof(name_buff));
-	f_key_info.referenced_db = thd_make_lex_string(
-		thd, 0, name_buff, len, 1);
+	if (f_key_info.referenced_db.strdup(get_thd_memroot(thd), name_buff, len))
+		return NULL;
 
 	/* Referenced (parent) table name */
 	ptr = dict_remove_db_name(foreign->referenced_table_name);
 	len = filename_to_tablename(ptr, name_buff, sizeof(name_buff), 1);
-	f_key_info.referenced_table = thd_make_lex_string(
-		thd, 0, name_buff, len, 1);
+	if (f_key_info.referenced_table.strdup(get_thd_memroot(thd), name_buff, len))
+		return NULL;
 
 	/* Dependent (child) database name */
 	len = dict_get_db_name_len(foreign->foreign_table_name);
@@ -15370,24 +15369,28 @@ get_foreign_key_info(
 	tmp_buff[len] = 0;
 
 	len = filename_to_tablename(tmp_buff, name_buff, sizeof(name_buff));
-	f_key_info.foreign_db = thd_make_lex_string(
-		thd, 0, name_buff, len, 1);
+	if (f_key_info.foreign_db.strdup(get_thd_memroot(thd), name_buff, len))
+		return NULL;
 
 	/* Dependent (child) table name */
 	ptr = dict_remove_db_name(foreign->foreign_table_name);
 	len = filename_to_tablename(ptr, name_buff, sizeof(name_buff), 1);
-	f_key_info.foreign_table = thd_make_lex_string(
-		thd, 0, name_buff, len, 1);
+	if (f_key_info.foreign_table.strdup(get_thd_memroot(thd), name_buff, len))
+		return NULL;
 
 	do {
-		ptr = foreign->foreign_col_names[i];
-		name = thd_make_lex_string(thd, name, ptr,
-					   strlen(ptr), 1);
-		f_key_info.foreign_fields.push_back(name);
+		ptr  = foreign->foreign_col_names[i];
+		if (!(name = new (get_thd_memroot(thd)) Lex_cstring))
+			return NULL;
+		if (name->strdup(get_thd_memroot(thd), ptr))
+			return NULL;
+		f_key_info.foreign_fields.push_back(name, get_thd_memroot(thd));
 		ptr = foreign->referenced_col_names[i];
-		name = thd_make_lex_string(thd, name, ptr,
-					   strlen(ptr), 1);
-		f_key_info.referenced_fields.push_back(name);
+		if (!(name = new (get_thd_memroot(thd)) Lex_cstring))
+			return NULL;
+		if (name->strdup(get_thd_memroot(thd), ptr))
+			return NULL;
+		f_key_info.referenced_fields.push_back(name, get_thd_memroot(thd));
 	} while (++i < foreign->n_fields);
 
 	if (foreign->type & DICT_FOREIGN_ON_DELETE_CASCADE) {
@@ -15439,17 +15442,10 @@ get_foreign_key_info(
 
 	if (foreign->referenced_index
 	    && foreign->referenced_index->name != NULL) {
-		referenced_key_name = thd_make_lex_string(
-			thd,
-			f_key_info.referenced_key_name,
-			foreign->referenced_index->name,
-			strlen(foreign->referenced_index->name),
-			1);
-	} else {
-		referenced_key_name = NULL;
+		f_key_info.referenced_key_name.strdup(
+			get_thd_memroot(thd),
+			foreign->referenced_index->name);
 	}
-
-	f_key_info.referenced_key_name = referenced_key_name;
 
 	pf_key_info = (FOREIGN_KEY_INFO*) thd_memdup(thd, &f_key_info,
 						      sizeof(FOREIGN_KEY_INFO));
