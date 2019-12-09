@@ -350,6 +350,7 @@ page_cur_parse_insert_rec(
 /**********************************************************//**
 Parses a log record of copying a record list end to a new created page.
 @return end of log record or NULL */
+ATTRIBUTE_COLD /* only used when crash-upgrading */
 const byte*
 page_parse_copy_rec_list_to_created_page(
 /*=====================================*/
