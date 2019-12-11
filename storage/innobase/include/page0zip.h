@@ -323,7 +323,7 @@ page_zip_write_trx_id_and_roll_ptr(
 	ulint		trx_id_col,
 	trx_id_t	trx_id,
 	roll_ptr_t	roll_ptr,
-	mtr_t*		mtr = NULL)
+	mtr_t*		mtr)
 	MY_ATTRIBUTE((nonnull(1,2,3)));
 
 /** Parse a MLOG_ZIP_WRITE_TRX_ID record.
@@ -350,7 +350,8 @@ page_zip_rec_set_deleted(
 /*=====================*/
 	page_zip_des_t*	page_zip,/*!< in/out: compressed page */
 	const byte*	rec,	/*!< in: record on the uncompressed page */
-	ulint		flag)	/*!< in: the deleted flag (nonzero=TRUE) */
+	ulint		flag,	/*!< in: the deleted flag (nonzero=TRUE) */
+	mtr_t*		mtr)	/*!< in,out: mini-transaction */
 	MY_ATTRIBUTE((nonnull));
 
 /**********************************************************************//**

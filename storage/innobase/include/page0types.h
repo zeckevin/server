@@ -145,17 +145,6 @@ extern page_zip_stat_t			page_zip_stat[PAGE_ZIP_SSIZE_MAX];
 extern page_zip_stat_per_index_t	page_zip_stat_per_index;
 
 /**********************************************************************//**
-Write the "deleted" flag of a record on a compressed page.  The flag must
-already have been written on the uncompressed page. */
-void
-page_zip_rec_set_deleted(
-/*=====================*/
-	page_zip_des_t*	page_zip,/*!< in/out: compressed page */
-	const byte*	rec,	/*!< in: record on the uncompressed page */
-	ulint		flag)	/*!< in: the deleted flag (nonzero=TRUE) */
-	MY_ATTRIBUTE((nonnull));
-
-/**********************************************************************//**
 Write the "owned" flag of a record on a compressed page.  The n_owned field
 must already have been written on the uncompressed page. */
 void
