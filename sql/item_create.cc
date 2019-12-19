@@ -1765,10 +1765,10 @@ protected:
 };
 
 
-class Create_func_release_all_locks : public Create_func_arg1
+class Create_func_release_all_locks : public Create_func_arg0
 {
 public:
-  virtual Item *create_1_arg(THD *thd, Item *arg1);
+  virtual Item *create_builder(THD *thd);
 
   static Create_func_release_all_locks s_singleton;
 
@@ -4779,11 +4779,12 @@ Create_func_rand::create_native(THD *thd, LEX_CSTRING *name,
 Create_func_release_all_locks Create_func_release_all_locks::s_singleton;
 
 Item*
-Create_func_release_all_locks::create_1_arg(THD *thd, Item *arg1)
+Create_func_release_all_locks::create_builder(THD *thd)
 {
+  //DBUG_ENTER("Create_func_release_all_locks::create");
   thd->lex->set_stmt_unsafe(LEX::BINLOG_STMT_UNSAFE_SYSTEM_FUNCTION);
-  thd->lex->uncacheable(UNCACHEABLE_SIDEEFFECT);
-  return new (thd->mem_root) Item_func_release_all_locks(thd, arg1);
+  thd->lex->safe_to_cache_query= 0;
+  return new (thd->mem_root) Item_func_release_all_locks(thd);
 }
 
 

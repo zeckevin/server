@@ -1,0 +1,47 @@
+#
+# MDEV-10569: Add RELEASE_ALL_LOCKS function
+#
+SELECT
+GET_LOCK('test1',10),
+GET_LOCK('test2',10),
+GET_LOCK('test3',10),
+GET_LOCK('test4',10);
+Catalog	Database	Table	Table_alias	Column	Column_alias	Type	Length	Max length	Is_null	Flags	Decimals	Charsetnr
+def					GET_LOCK('test1',10)	3	1	1	Y	32896	0	63
+def					GET_LOCK('test2',10)	3	1	1	Y	32896	0	63
+def					GET_LOCK('test3',10)	3	1	1	Y	32896	0	63
+def					GET_LOCK('test4',10)	3	1	1	Y	32896	0	63
+GET_LOCK('test1',10)	GET_LOCK('test2',10)	GET_LOCK('test3',10)	GET_LOCK('test4',10)
+1	1	1	1
+SELECT * from information_schema.metadata_lock_info;
+Catalog	Database	Table	Table_alias	Column	Column_alias	Type	Length	Max length	Is_null	Flags	Decimals	Charsetnr
+def	information_schema	METADATA_LOCK_INFO	metadata_lock_info	THREAD_ID	THREAD_ID	8	20	1	N	32801	0	63
+def	information_schema	METADATA_LOCK_INFO	metadata_lock_info	LOCK_MODE	LOCK_MODE	253	24	19	Y	0	0	8
+def	information_schema	METADATA_LOCK_INFO	metadata_lock_info	LOCK_DURATION	LOCK_DURATION	253	30	0	Y	0	0	8
+def	information_schema	METADATA_LOCK_INFO	metadata_lock_info	LOCK_TYPE	LOCK_TYPE	253	33	9	Y	0	0	8
+def	information_schema	METADATA_LOCK_INFO	metadata_lock_info	TABLE_SCHEMA	TABLE_SCHEMA	253	64	5	Y	0	0	8
+def	information_schema	METADATA_LOCK_INFO	metadata_lock_info	TABLE_NAME	TABLE_NAME	253	64	0	Y	0	0	8
+THREAD_ID	LOCK_MODE	LOCK_DURATION	LOCK_TYPE	TABLE_SCHEMA	TABLE_NAME
+4	MDL_SHARED_NO_WRITE	NULL	User lock	test3	
+4	MDL_SHARED_NO_WRITE	NULL	User lock	test1	
+4	MDL_SHARED_NO_WRITE	NULL	User lock	test2	
+4	MDL_SHARED_NO_WRITE	NULL	User lock	test4	
+SELECT RELEASE_ALL_LOCKS();
+Catalog	Database	Table	Table_alias	Column	Column_alias	Type	Length	Max length	Is_null	Flags	Decimals	Charsetnr
+def					RELEASE_ALL_LOCKS()	3	1	1	Y	32928	0	63
+RELEASE_ALL_LOCKS()
+4
+SELECT * from information_schema.metadata_lock_info;
+Catalog	Database	Table	Table_alias	Column	Column_alias	Type	Length	Max length	Is_null	Flags	Decimals	Charsetnr
+def	information_schema	METADATA_LOCK_INFO	metadata_lock_info	THREAD_ID	THREAD_ID	8	20	0	N	32801	0	63
+def	information_schema	METADATA_LOCK_INFO	metadata_lock_info	LOCK_MODE	LOCK_MODE	253	24	0	Y	0	0	8
+def	information_schema	METADATA_LOCK_INFO	metadata_lock_info	LOCK_DURATION	LOCK_DURATION	253	30	0	Y	0	0	8
+def	information_schema	METADATA_LOCK_INFO	metadata_lock_info	LOCK_TYPE	LOCK_TYPE	253	33	0	Y	0	0	8
+def	information_schema	METADATA_LOCK_INFO	metadata_lock_info	TABLE_SCHEMA	TABLE_SCHEMA	253	64	0	Y	0	0	8
+def	information_schema	METADATA_LOCK_INFO	metadata_lock_info	TABLE_NAME	TABLE_NAME	253	64	0	Y	0	0	8
+THREAD_ID	LOCK_MODE	LOCK_DURATION	LOCK_TYPE	TABLE_SCHEMA	TABLE_NAME
+SELECT RELEASE_ALL_LOCKS();
+Catalog	Database	Table	Table_alias	Column	Column_alias	Type	Length	Max length	Is_null	Flags	Decimals	Charsetnr
+def					RELEASE_ALL_LOCKS()	3	1	1	Y	32928	0	63
+RELEASE_ALL_LOCKS()
+0

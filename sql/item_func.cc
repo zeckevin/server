@@ -4089,43 +4089,30 @@ longlong Item_func_get_lock::val_int()
 longlong Item_func_release_all_locks::val_int()
 {
   DBUG_ASSERT(fixed == 1);
-  String *res= args[0]->val_str(&value);
   THD *thd= current_thd;
+  uint result= 0;
   User_level_lock *ull;
   DBUG_ENTER("Item_func_release_all_locks::val_int");
-  null_value= 1;
 
-  if (!ull_name_ok(res))     DBUG_RETURN(0);
-
-  DBUG_PRINT("enter", ("lock: %.*s", res->length(), res->ptr()));
-
-  MDL_key ull_key;
-  ull_key.mdl_key_init(MDL_key::USER_LOCK, res->c_ptr_safe(), "");
-
-  if (!my_hash_inited(&thd->ull_hash) ||
-      !(ull=
-        (User_level_lock*) my_hash_search(&thd->ull_hash,
-                                          ull_key.ptr(), ull_key.length())))
+  if (my_hash_inited(&thd->ull_hash))
   {
-    null_value= thd->mdl_context.get_lock_owner(&ull_key) == 0;
-    DBUG_RETURN(0);
+    for (ulong i= 0; i < thd->ull_hash.records; i++)
+    {
+      ull= reinterpret_cast<User_level_lock*>(my_hash_element(&thd->ull_hash,
+                                                              i));
+      thd->mdl_context.release_lock(ull->lock);
+      result+= ull->refs;
+      my_free(ull);
+
+     //     my_hash_delete(&thd->ull_hash, (uchar*) ull);
+    //thd->mdl_context.release_lock(ull->lock);
+    }
+    my_hash_reset(&thd->ull_hash);
   }
 
-  DBUG_PRINT("info", ("ref count: %d", (int) ull->refs));
-  null_value= 0;
+  DBUG_RETURN(result);
 
-
-  int num_unlocked= 0;
-  for (uint i= 0; i < thd->ull_hash.records; i++)
-  {
-    ull= (User_level_lock *) my_hash_element(&thd->ull_hash, i);
-    thd->mdl_context.release_lock(ull->lock);
-    my_free(ull);
-    num_unlocked= i;
-  }
-
-  my_hash_free(&thd->ull_hash);
-  DBUG_RETURN(num_unlocked);
+  DBUG_RETURN(0);
 }
 
 

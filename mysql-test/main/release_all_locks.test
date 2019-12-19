@@ -1,46 +1,17 @@
---disable_warnings
-drop table if exists t1,t2;
---enable_warnings
 --enable_metadata
 # PS protocol gives slightly different metadata
 --disable_ps_protocol
-# create table t1 (a tinyint, b smallint, c mediumint, d int, e bigint, f float(3,2), g double(4,3), h decimal(5,4), i year, j date, k timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, l datetime, m enum('a','b'), n set('a','b'), o char(10));
-# select * from t1;
-# select a b, b c from t1 as t2;
-# drop table t1;
 --source include/have_metadata_lock_info.inc
-
-
-
-#
-# Test metadata from ORDER BY (Bug #2654)
-#
-
-CREATE TABLE t1 (id tinyint(3) default NULL, data varchar(255) default NULL);
-INSERT INTO t1 VALUES (1,'male'),(2,'female');
-CREATE TABLE t2 (id tinyint(3) unsigned default NULL, data char(3) default '0');
-INSERT INTO t2 VALUES (1,'yes'),(2,'no');
+--echo #
+--echo # MDEV-10569: Add RELEASE_ALL_LOCKS function
+--echo #
 
 SELECT
   GET_LOCK('test1',10),
-  GET_LOCK('test2',10),  
+  GET_LOCK('test2',10),
   GET_LOCK('test3',10),
-  GET_LOCK('test2',10);
-select * from information_schema.metadata_lock_info;
-SELECT
-  IS_FREE_LOCK('test1'),
-  IS_FREE_LOCK('test2'),
-  IS_FREE_LOCK('test3'),
-  RELEASE_ALL_LOCKS('test3');
-select * from information_schema.metadata_lock_info;
-SELECT
-  IS_FREE_LOCK('test2'),
-  RELEASE_ALL_LOCKS('test3'),
-  IS_FREE_LOCK('test2');
-select * from information_schema.metadata_lock_info
-
-# need METADATA_LOCK_INFO Plugin
-# SELECT * FROM INFORMATION_SCHEMA.METADATA_LOCK_INFO;
-
-DROP TABLE t1;
-DROP TABLE t2;
+  GET_LOCK('test4',10);
+SELECT * from information_schema.metadata_lock_info;
+SELECT RELEASE_ALL_LOCKS();
+SELECT * from information_schema.metadata_lock_info;
+SELECT RELEASE_ALL_LOCKS();
