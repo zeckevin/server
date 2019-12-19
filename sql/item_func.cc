@@ -4096,18 +4096,15 @@ longlong Item_func_release_all_locks::val_int()
 
   if (my_hash_inited(&thd->ull_hash))
   {
-    for (ulong i= 0; i < thd->ull_hash.records; i++)
+    ulong i= thd->ull_hash.records;
+    while (thd->ull_hash.records>0)
     {
-      ull= reinterpret_cast<User_level_lock*>(my_hash_element(&thd->ull_hash,
-                                                              i));
+      ull= (User_level_lock*)(my_hash_element(&thd->ull_hash, --i));
       thd->mdl_context.release_lock(ull->lock);
       result+= ull->refs;
+      my_hash_delete(&thd->ull_hash, (uchar*) ull);
       my_free(ull);
-
-     //     my_hash_delete(&thd->ull_hash, (uchar*) ull);
-    //thd->mdl_context.release_lock(ull->lock);
     }
-    my_hash_reset(&thd->ull_hash);
   }
 
   DBUG_RETURN(result);

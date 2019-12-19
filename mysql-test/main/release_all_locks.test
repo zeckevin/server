@@ -15,3 +15,10 @@ SELECT * from information_schema.metadata_lock_info;
 SELECT RELEASE_ALL_LOCKS();
 SELECT * from information_schema.metadata_lock_info;
 SELECT RELEASE_ALL_LOCKS();
+SELECT
+  GET_LOCK('test1',10),
+  GET_LOCK('test1',10),
+  GET_LOCK('test1',10);
+SELECT * from information_schema.metadata_lock_info;
+SELECT RELEASE_ALL_LOCKS();
+SELECT RELEASE_ALL_LOCKS();
