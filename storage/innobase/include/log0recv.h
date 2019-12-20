@@ -105,11 +105,10 @@ bool recv_sys_add_to_parsing_buf(const byte* log_block, lsn_t scanned_lsn);
 /** Parse log records from a buffer and optionally store them in recv_sys.pages
 to wait merging to file pages.
 @param[in]	checkpoint_lsn	the LSN of the latest checkpoint
-@param[in]	store		whether to store page operations
 @param[in]	apply		whether to apply the records
 @return whether MLOG_CHECKPOINT record was seen the first time,
 or corruption was noticed */
-bool recv_parse_log_recs(lsn_t checkpoint_lsn, store_t store, bool apply);
+bool recv_parse_log_recs(lsn_t checkpoint_lsn, bool apply);
 
 /** Moves the parsing buffer data left to the buffer start. */
 void recv_sys_justify_left_parsing_buf();
@@ -279,8 +278,6 @@ struct recv_sys_t{
 				record, or 0 if none was parsed */
 	/** the time when progress was last reported */
 	time_t		progress_time;
-	mem_heap_t*	heap;	/*!< memory heap of log records and file
-				addresses*/
 
 	using map = std::map<const page_id_t, page_recv_t,
 			     std::less<const page_id_t>,
@@ -308,6 +305,19 @@ struct recv_sys_t{
 
 	/** Last added LSN to pages. */
 	lsn_t		last_stored_lsn;
+
+	/** Last stored offset to pages */
+	ulint		last_stored_offset;
+
+	/** Number of buf_block_t* blocks to store the redo log */
+	ulint		num_avail_blocks;
+
+	/** Base node of the redo block list */
+	UT_LIST_BASE_NODE_T(buf_block_t) redo_list;
+
+	/** Value to indicate whether to store the redo log
+	in buf_block_t */
+	store_t		store_value;
 
 	/** Initialize the redo log recovery subsystem. */
 	void create();
@@ -347,6 +357,46 @@ struct recv_sys_t{
 		progress_time = time;
 		return true;
 	}
+
+	/** Check whether overflow of pages happened
+	@param[in] len len of the data to be added */
+	bool check_overflow(uint32_t len);
+
+	/** Get the memory block for storing recv_t and redo log data
+	@param[in] len len of the data to be stored
+	@param[in] store_data whether the redo log data to be stored
+	@param[in] new_block whether to create new block
+	@return block of the data to be stored */
+	byte* get_mem_block(uint32_t len, bool store_data=false,
+			    bool new_block=false);
+
+	/** Get the free len of the latest block
+	@return free length*/
+	uint32_t get_free_len();
+
+	/** Get the block for the given page by traversing the
+	redo list in recv_sys
+	@param[in] page	page of the redo log data
+	@return block of the data */
+	buf_block_t* get_block(byte* page);
+
+	/** Set the store value with given parameter
+	@param[in] store data to be stored */
+	void set_store_value(store_t store) { store_value= store; }
+
+	/** Get the store value from store_value */
+	store_t get_store_value() { return store_value; }
+
+	/** Assign the store value depends on last phase and
+	mlog_checkpoint_lsn. */
+	void assign_store_value(bool last_phase)
+	{
+	  store_value= (mlog_checkpoint_lsn == 0)
+		  ? STORE_NO: (last_phase ? STORE_IF_EXISTS : STORE_YES);
+	}
+
+	/** Remove the free blocks from redo list. */
+	void remove_free_blocks();
 };
 
 /** The recovery system */
@@ -386,11 +436,5 @@ times! */
 /** Size of block reads when the log groups are scanned forward to do a
 roll-forward */
 #define RECV_SCAN_SIZE		(4U << srv_page_size_shift)
-
-/** This many frames must be left free in the buffer pool when we scan
-the log and store the scanned log records in the buffer pool: we will
-use these free frames to read in pages when we start applying the
-log records to the database. */
-extern ulint	recv_n_pool_free_frames;
 
 #endif

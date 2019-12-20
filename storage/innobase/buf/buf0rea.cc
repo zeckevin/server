@@ -766,7 +766,8 @@ buf_read_recv_pages(
 		ulint			count = 0;
 
 		buf_pool = buf_pool_get(cur_page_id);
-		while (buf_pool->n_pend_reads >= recv_n_pool_free_frames / 2) {
+		while (buf_pool->n_pend_reads >=
+			(recv_sys.num_avail_blocks * srv_page_size) / 2) {
 
 			os_thread_sleep(10000);
 
