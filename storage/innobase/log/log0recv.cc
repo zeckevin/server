@@ -1108,8 +1108,7 @@ static dberr_t recv_log_format_0_recover(lsn_t lsn, bool crypt)
 		"Upgrade after a crash is not supported."
 		" This redo log was created before MariaDB 10.2.2";
 
-	log_sys.log.read((source_offset & ~(OS_FILE_LOG_BLOCK_SIZE - 1))
-				 & (srv_page_size - 1),
+	log_sys.log.read(source_offset & ~(OS_FILE_LOG_BLOCK_SIZE - 1),
 			 {buf, OS_FILE_LOG_BLOCK_SIZE});
 
 	if (log_block_calc_checksum_format_0(buf)
