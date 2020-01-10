@@ -4046,13 +4046,15 @@ col_loop1:
 		if (success && my_isspace(cs, *ptr1)) {
 			ptr2 = dict_accept(cs, ptr1, "BY", &success);
 			if (success) {
-				my_error(ER_FOREIGN_KEY_ON_PARTITIONED,MYF(0));
+				my_error(ER_FEATURE_NOT_SUPPORTED_WITH_PARTITIONING,
+					 MYF(0), "FOREIGN KEY");
 				return(DB_CANNOT_ADD_CONSTRAINT);
 			}
 		}
 	}
 	if (dict_table_is_partition(table)) {
-		my_error(ER_FOREIGN_KEY_ON_PARTITIONED,MYF(0));
+		my_error(ER_FEATURE_NOT_SUPPORTED_WITH_PARTITIONING, MYF(0), 
+			 "FOREIGN KEY");
 		return(DB_CANNOT_ADD_CONSTRAINT);
 	}
 
@@ -4147,7 +4149,8 @@ col_loop1:
 	if (referenced_table && dict_table_is_partition(referenced_table)) {
 		/* How could one make a referenced table to be a partition? */
 		ut_ad(0);
-		my_error(ER_FOREIGN_KEY_ON_PARTITIONED,MYF(0));
+		my_error(ER_FEATURE_NOT_SUPPORTED_WITH_PARTITIONING, MYF(0), 
+			 "FOREIGN KEY");
 		return(DB_CANNOT_ADD_CONSTRAINT);
 	}
 
