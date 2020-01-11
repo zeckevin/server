@@ -66,7 +66,7 @@ INSERT INTO t1 VALUES (42);
 BEGIN;
 DELETE FROM t1;
 
-let $restart_parameters = --innodb-log-files-in-group=3 --innodb-log-file-size=5M;
+let $restart_parameters = --innodb-log-file-size=5M;
 --source include/restart_mysqld.inc
 let $shutdown_timeout=;
 

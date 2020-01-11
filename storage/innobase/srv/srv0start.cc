@@ -135,8 +135,8 @@ UNIV_INTERN bool	srv_undo_sources;
 #ifdef UNIV_DEBUG
 /** InnoDB system tablespace to set during recovery */
 UNIV_INTERN uint	srv_sys_space_size_debug;
-/** whether redo log files have been created at startup */
-UNIV_INTERN bool	srv_log_files_created;
+/** whether redo log file have been created at startup */
+UNIV_INTERN bool	srv_log_file_created;
 #endif /* UNIV_DEBUG */
 
 /** Bit flags for tracking background thread creation. They are used to
@@ -247,96 +247,43 @@ srv_file_check_mode(
 	return(true);
 }
 
+/** Initial number of the redo log file */
+static const char INIT_LOG_FILE0[]= "101";
 
-/** Creates a log file.
-@param[in]	name	log file name
-@return DB_SUCCESS or error code */
-static MY_ATTRIBUTE((nonnull, warn_unused_result)) dberr_t
-	create_log_file(const char* name)
+/** Delete log file.
+@param[in]	suffix	siffix of the file name */
+static void delete_log_file(const char* suffix)
 {
-	bool		ret;
+  auto path = get_log_file_path(LOG_FILE_NAME_PREFIX).append(suffix);
 
-	pfs_os_file_t file = os_file_create(
-		innodb_log_file_key, name,
-		OS_FILE_CREATE|OS_FILE_ON_ERROR_NO_EXIT, OS_FILE_NORMAL,
-		OS_LOG_FILE, srv_read_only_mode, &ret);
-
-	if (!ret) {
-		ib::error() << "Cannot create " << name;
-		return(DB_ERROR);
-	}
-
-	ib::info() << "Setting log file " << name << " size to "
-		<< srv_log_file_size << " bytes";
-
-	ret = os_file_set_size(name, file, srv_log_file_size);
-	if (!ret) {
-		os_file_close(file);
-		ib::error() << "Cannot set log file " << name << " size to "
-			<< srv_log_file_size << " bytes";
-		return(DB_ERROR);
-	}
-
-	ret = os_file_close(file);
-	ut_a(ret);
-
-	return(DB_SUCCESS);
-}
-
-/** Initial number of the first redo log file */
-#define INIT_LOG_FILE0	(SRV_N_LOG_FILES_MAX + 1)
-
-/** Delete all log files.
-@param[in,out]	logfilename	buffer for log file name
-@param[in]	dirnamelen	length of the directory path
-@param[in]	n_files		number of files to delete
-@param[in]	i		first file to delete */
-static
-void
-delete_log_files(char* logfilename, size_t dirnamelen, uint n_files, uint i=0)
-{
-	/* Remove any old log files. */
-	for (; i < n_files; i++) {
-		sprintf(logfilename + dirnamelen, "ib_logfile%u", i);
-
-		/* Ignore errors about non-existent files or files
-		that cannot be removed. The create_log_file() will
-		return an error when the file exists. */
+  /* Ignore errors about non-existent files or files that cannot be removed.
+  The create_log_file() will return an error when the file exists. */
 #ifdef _WIN32
-		DeleteFile((LPCTSTR) logfilename);
+  DeleteFile((LPCTSTR) path.c_str());
 #else
-		unlink(logfilename);
+  unlink(path.c_str());
 #endif
-	}
 }
 
-/*********************************************************************//**
-Creates all log files.
+/** Creates log file.
+@param[in]	lsn		FIL_PAGE_FILE_FLUSH_LSN value
+@param[out]	logfile0	name of the log file
 @return DB_SUCCESS or error code */
-static
-dberr_t
-create_log_files(
-/*=============*/
-	char*	logfilename,	/*!< in/out: buffer for log file name */
-	size_t	dirnamelen,	/*!< in: length of the directory path */
-	lsn_t	lsn,		/*!< in: FIL_PAGE_FILE_FLUSH_LSN value */
-	std::string& logfile0)	/*!< out: name of the first log file */
+static dberr_t create_log_file(lsn_t lsn, std::string& logfile0)
 {
-	dberr_t err;
-
 	if (srv_read_only_mode) {
-		ib::error() << "Cannot create log files in read-only mode";
+		ib::error() << "Cannot create log file in read-only mode";
 		return(DB_READ_ONLY);
 	}
 
 	/* Crashing after deleting the first file should be
 	recoverable. The buffer pool was clean, and we can simply
-	create all log files from the scratch. */
-	DBUG_EXECUTE_IF("innodb_log_abort_6",
-			delete_log_files(logfilename, dirnamelen, 1);
-			return(DB_ERROR););
+	create log file from the scratch. */
+	DBUG_EXECUTE_IF("innodb_log_abort_6", delete_log_file("0");
+			return DB_ERROR;);
 
-	delete_log_files(logfilename, dirnamelen, INIT_LOG_FILE0 + 1);
+	delete_log_file("0");
+	delete_log_file(INIT_LOG_FILE0);
 
 	DBUG_PRINT("ib_log", ("After innodb_log_abort_6"));
 	ut_ad(!buf_pool_check_no_pending_io());
@@ -344,37 +291,49 @@ create_log_files(
 	DBUG_EXECUTE_IF("innodb_log_abort_7", return(DB_ERROR););
 	DBUG_PRINT("ib_log", ("After innodb_log_abort_7"));
 
-	std::vector<std::string> file_names;
+	logfile0 = get_log_file_path(LOG_FILE_NAME_PREFIX)
+			   .append(INIT_LOG_FILE0);
 
-	for (unsigned i = 0; i < srv_n_log_files; i++) {
-		sprintf(logfilename + dirnamelen,
-			"ib_logfile%u", i ? i : INIT_LOG_FILE0);
+	bool ret;
+	pfs_os_file_t file = os_file_create(
+		innodb_log_file_key, logfile0.c_str(),
+		OS_FILE_CREATE|OS_FILE_ON_ERROR_NO_EXIT, OS_FILE_NORMAL,
+		OS_LOG_FILE, srv_read_only_mode, &ret);
 
-		err = create_log_file(logfilename);
-
-		if (err != DB_SUCCESS) {
-			return(err);
-		}
-
-		file_names.emplace_back(logfilename);
+	if (!ret) {
+		ib::error() << "Cannot create " << logfile0;
+		return DB_ERROR;
 	}
 
-	logfile0 = file_names[0];
-	log_sys.log.set_file_names(std::move(file_names));
+	ib::info() << "Setting log file " << logfile0 << " size to "
+		   << srv_log_file_size << " bytes";
+
+	ret = os_file_set_size(logfile0.c_str(), file, srv_log_file_size);
+	if (!ret) {
+		os_file_close(file);
+		ib::error() << "Cannot set log file " << logfile0
+			    << " size to " << srv_log_file_size << " bytes";
+		return DB_ERROR;
+	}
+
+	ret = os_file_close(file);
+	ut_a(ret);
+
+	log_sys.log.set_file_path(logfile0);
 
 	DBUG_EXECUTE_IF("innodb_log_abort_8", return(DB_ERROR););
 	DBUG_PRINT("ib_log", ("After innodb_log_abort_8"));
 
-	/* We did not create the first log file initially as
-	ib_logfile0, so that crash recovery cannot find it until it
-	has been completed and renamed. */
+	/* We did not create the first log file initially as LOG_FILE_NAME, so
+	that crash recovery cannot find it until it has been completed and
+        renamed. */
 
-	log_sys.log.create(srv_n_log_files);
+	log_sys.log.create();
 	if (!log_set_capacity(srv_log_file_size_requested)) {
-		return(DB_ERROR);
+		return DB_ERROR;
 	}
 
-	log_sys.log.open_files();
+	log_sys.log.open_file();
 	fil_open_system_tablespace_files();
 
 	/* Create a log checkpoint. */
@@ -407,58 +366,54 @@ create_log_files(
 
 	log_make_checkpoint();
 
-	return(DB_SUCCESS);
+	return DB_SUCCESS;
 }
 
 /** Rename the first redo log file.
-@param[in,out]	logfilename	buffer for the log file name
-@param[in]	dirnamelen	length of the directory path
 @param[in]	lsn		FIL_PAGE_FILE_FLUSH_LSN value
 @param[in,out]	logfile0	name of the first log file
 @return	error code
 @retval	DB_SUCCESS	on successful operation */
 MY_ATTRIBUTE((warn_unused_result, nonnull))
-static dberr_t create_log_files_rename(char *logfilename, size_t dirnamelen,
-                                       lsn_t lsn, std::string &logfile0)
+static dberr_t create_log_file_rename(lsn_t lsn, std::string &logfile0)
 {
   log_sys.log.fsync();
 
-  ut_ad(!srv_log_files_created);
-  ut_d(srv_log_files_created= true);
+  ut_ad(!srv_log_file_created);
+  ut_d(srv_log_file_created= true);
 
   DBUG_EXECUTE_IF("innodb_log_abort_9", return (DB_ERROR););
   DBUG_PRINT("ib_log", ("After innodb_log_abort_9"));
 
-  /* Close the log files, so that we can rename the first one. */
-  log_sys.log.close_files();
+  /* Close the log file, so that we can rename it. */
+  log_sys.log.close_file();
 
-  /* Rename the first log file, now that a log
-  checkpoint has been created. */
-  sprintf(logfilename + dirnamelen, "ib_logfile%u", 0);
+  /* Rename the first log file, now that a log checkpoint has been created. */
+  auto new_name = get_log_file_path();
 
-  ib::info() << "Renaming log file " << logfile0 << " to " << logfilename;
+  ib::info() << "Renaming log file " << logfile0 << " to " << new_name;
 
   log_mutex_enter();
-  ut_ad(logfile0.size() == 2 + strlen(logfilename));
+  ut_ad(logfile0.size() == 2 + new_name.size());
   dberr_t err=
-      os_file_rename(innodb_log_file_key, logfile0.c_str(), logfilename)
+      os_file_rename(innodb_log_file_key, logfile0.c_str(), new_name.c_str())
           ? DB_SUCCESS
           : DB_ERROR;
 
-  /* Replace the first file with ib_logfile0. */
-  logfile0= logfilename;
-  log_sys.log.file_names[0]= logfilename;
+  /* Replace the first file with LOG_FILE_NAME. */
+  logfile0= new_name;
+  log_sys.log.set_file_path(new_name);
   log_mutex_exit();
 
   DBUG_EXECUTE_IF("innodb_log_abort_10", err= DB_ERROR;);
 
   if (err == DB_SUCCESS)
   {
-    log_sys.log.open_files();
-    ib::info() << "New log files created, LSN=" << lsn;
+    log_sys.log.open_file();
+    ib::info() << "New log file created, LSN=" << lsn;
   }
 
-  return (err);
+  return err;
 }
 
 /** Create an undo tablespace file
@@ -720,34 +675,23 @@ srv_check_undo_redo_logs_exists()
 		}
 	}
 
-	/* Check if any redo log files exist */
-	char	logfilename[OS_FILE_MAX_PATH];
-	size_t dirnamelen = strlen(srv_log_group_home_dir);
-	memcpy(logfilename, srv_log_group_home_dir, dirnamelen);
+	/* Check if redo log file exists */
+	auto logfilename = get_log_file_path();
 
-	for (unsigned i = 0; i < srv_n_log_files; i++) {
-		sprintf(logfilename + dirnamelen,
-			"ib_logfile%u", i);
+	fh = os_file_create(innodb_log_file_key, logfilename.c_str(),
+			    OS_FILE_OPEN_RETRY | OS_FILE_ON_ERROR_NO_EXIT
+				    | OS_FILE_ON_ERROR_SILENT,
+			    OS_FILE_NORMAL, OS_LOG_FILE, srv_read_only_mode,
+			    &ret);
 
-		fh = os_file_create(
-			innodb_log_file_key, logfilename,
-			OS_FILE_OPEN_RETRY
-			| OS_FILE_ON_ERROR_NO_EXIT
-			| OS_FILE_ON_ERROR_SILENT,
-			OS_FILE_NORMAL,
-			OS_LOG_FILE,
-			srv_read_only_mode,
-			&ret);
-
-		if (ret) {
-			os_file_close(fh);
-			ib::error() << "redo log file '" << logfilename
-				<< "' exists. Creating system tablespace with"
-				" existing redo log files is not recommended."
-				" Please delete all redo log files before"
-				" creating new system tablespace.";
-			return(DB_ERROR);
-		}
+	if (ret) {
+		os_file_close(fh);
+		ib::error() << "redo log file '" << logfilename
+			    << "' exists. Creating system tablespace with"
+			       " existing redo log file is not recommended."
+			       " Please delete redo log file before"
+			       " creating new system tablespace.";
+		return DB_ERROR;
 	}
 
 	return(DB_SUCCESS);
@@ -1060,16 +1004,13 @@ srv_init_abort_low(
 	return(err);
 }
 
-/** Prepare to delete the redo log files. Flush the dirty pages from all the
+/** Prepare to delete the redo log file. Flush the dirty pages from all the
 buffer pools.  Flush the redo log buffer to the redo log file.
-@param[in]	n_files		number of old redo log files
+@param[in]	old_exists	old redo log file exists
 @return lsn upto which data pages have been flushed. */
-static
-lsn_t
-srv_prepare_to_delete_redo_log_files(
-	ulint	n_files)
+static lsn_t srv_prepare_to_delete_redo_log_file(bool old_exists)
 {
-	DBUG_ENTER("srv_prepare_to_delete_redo_log_files");
+	DBUG_ENTER("srv_prepare_to_delete_redo_log_file");
 
 	lsn_t	flushed_lsn;
 	ulint	pending_io = 0;
@@ -1098,7 +1039,7 @@ srv_prepare_to_delete_redo_log_files(
 			    || (log_sys.log.format & ~log_t::FORMAT_ENCRYPTED)
 			    != log_t::FORMAT_10_4) {
 				info << "Upgrading redo log: ";
-			} else if (n_files != srv_n_log_files
+			} else if (!old_exists
 				   || srv_log_file_size
 				   != srv_log_file_size_requested) {
 				if (srv_encrypt_log
@@ -1113,21 +1054,20 @@ srv_prepare_to_delete_redo_log_files(
 						" and resizing";
 				}
 
-				info << " redo log from " << n_files
-				     << "*" << srv_log_file_size << " to ";
+				info << " redo log from " << srv_log_file_size
+				     << " to ";
 			} else if (srv_encrypt_log) {
 				info << "Encrypting redo log: ";
 			} else {
 				info << "Removing redo log encryption: ";
 			}
 
-			info << srv_n_log_files << "*"
-			     << srv_log_file_size_requested
+			info << srv_log_file_size_requested
 			     << " bytes; LSN=" << flushed_lsn;
 		}
 
 		srv_start_lsn = flushed_lsn;
-		/* Flush the old log files. */
+		/* Flush the old log file. */
 		log_mutex_exit();
 
 		log_write_up_to(flushed_lsn, true);
@@ -1158,6 +1098,70 @@ srv_prepare_to_delete_redo_log_files(
 	DBUG_RETURN(flushed_lsn);
 }
 
+/** Tries to locate LOG_FILE_NAME and check it's size, etc
+@param[out]	log_file_found	returns true here if correct file was found
+@return	dberr_t with DB_SUCCESS or some error */
+static dberr_t find_and_check_log_file(bool &log_file_found)
+{
+  log_file_found= false;
+
+  auto logfile0= get_log_file_path();
+  os_file_stat_t stat_info;
+  const dberr_t err= os_file_get_status(logfile0.c_str(), &stat_info, false,
+                                        srv_read_only_mode);
+
+  auto is_operation_restore= []() -> bool {
+    return srv_operation == SRV_OPERATION_RESTORE ||
+           srv_operation == SRV_OPERATION_RESTORE_EXPORT;
+  };
+
+  if (err == DB_NOT_FOUND)
+  {
+    if (is_operation_restore())
+      return DB_NOT_FOUND;
+
+    return DB_SUCCESS;
+  }
+
+  if (stat_info.type != OS_FILE_TYPE_FILE)
+    return DB_SUCCESS;
+
+  if (!srv_file_check_mode(logfile0.c_str()))
+    return DB_ERROR;
+
+  const os_offset_t size= stat_info.size;
+  ut_a(size != (os_offset_t) -1);
+
+  if (size % OS_FILE_LOG_BLOCK_SIZE)
+  {
+    ib::error() << "Log file " << logfile0 << " size " << size
+                << " is not a multiple of " << OS_FILE_LOG_BLOCK_SIZE
+                << " bytes";
+    return DB_ERROR;
+  }
+
+  if (size == 0 && is_operation_restore())
+  {
+    /* Tolerate an empty LOG_FILE_NAME from a previous run of
+    mariabackup --prepare. */
+    return DB_NOT_FOUND;
+  }
+  /* The first log file must consist of at least the following 512-byte pages:
+  header, checkpoint page 1, empty, checkpoint page 2, redo log page(s).
+
+  Mariabackup --prepare would create an empty LOG_FILE_NAME. Tolerate it. */
+  if (size != 0 && size <= OS_FILE_LOG_BLOCK_SIZE * 4)
+  {
+    ib::error() << "Log file " << logfile0 << " size " << size
+                << " is too small";
+    return DB_ERROR;
+  }
+  srv_log_file_size= size;
+
+  log_file_found= true;
+  return DB_SUCCESS;
+}
+
 /** Start InnoDB.
 @param[in]	create_new_db	whether to create a new database
 @return DB_SUCCESS or error code */
@@ -1165,9 +1169,8 @@ dberr_t srv_start(bool create_new_db)
 {
 	lsn_t		flushed_lsn;
 	dberr_t		err		= DB_SUCCESS;
-	ulint		srv_n_log_files_found = srv_n_log_files;
+	bool		srv_log_file_found = true;
 	mtr_t		mtr;
-	unsigned	i = 0;
 
 	ut_ad(srv_operation == SRV_OPERATION_NORMAL
 	      || srv_operation == SRV_OPERATION_RESTORE
@@ -1450,16 +1453,6 @@ dberr_t srv_start(bool create_new_db)
 		return(srv_init_abort(err));
 	}
 
-	char logfilename[10000];
-	size_t dirnamelen = strlen(srv_log_group_home_dir);
-	ut_a(dirnamelen < (sizeof logfilename) - 10 - sizeof "ib_logfile");
-	memcpy(logfilename, srv_log_group_home_dir, dirnamelen);
-
-	/* Add a path separator if needed. */
-	if (dirnamelen && logfilename[dirnamelen - 1] != OS_PATH_SEPARATOR) {
-		logfilename[dirnamelen++] = OS_PATH_SEPARATOR;
-	}
-
 	srv_log_file_size_requested = srv_log_file_size;
 
 	if (innodb_encrypt_temporary_tables && !log_crypt_init()) {
@@ -1473,8 +1466,7 @@ dberr_t srv_start(bool create_new_db)
 
 		flushed_lsn = log_get_lsn();
 
-		err = create_log_files(
-			logfilename, dirnamelen, flushed_lsn, logfile0);
+		err = create_log_file(flushed_lsn, logfile0);
 
 		if (err != DB_SUCCESS) {
 			return(srv_init_abort(err));
@@ -1482,107 +1474,31 @@ dberr_t srv_start(bool create_new_db)
 	} else {
 		srv_log_file_size = 0;
 
-		for (i = 0; i < SRV_N_LOG_FILES_MAX; i++) {
-			os_file_stat_t	stat_info;
-
-			sprintf(logfilename + dirnamelen,
-				"ib_logfile%u", i);
-
-			err = os_file_get_status(
-				logfilename, &stat_info, false,
-				srv_read_only_mode);
-
+		bool log_file_found;
+		if (dberr_t err = find_and_check_log_file(log_file_found)) {
 			if (err == DB_NOT_FOUND) {
-				if (i == 0) {
-					if (srv_operation
-					    == SRV_OPERATION_RESTORE
-					    || srv_operation
-					    == SRV_OPERATION_RESTORE_EXPORT) {
-						return(DB_SUCCESS);
-					}
-				}
-
-				/* opened all files */
-				break;
+				return DB_SUCCESS;
 			}
-
-			if (stat_info.type != OS_FILE_TYPE_FILE) {
-				break;
-			}
-
-			if (!srv_file_check_mode(logfilename)) {
-				return(srv_init_abort(DB_ERROR));
-			}
-
-			const os_offset_t size = stat_info.size;
-			ut_a(size != (os_offset_t) -1);
-
-			if (size & (OS_FILE_LOG_BLOCK_SIZE - 1)) {
-
-				ib::error() << "Log file " << logfilename
-					<< " size " << size << " is not a"
-					" multiple of 512 bytes";
-				return(srv_init_abort(DB_ERROR));
-			}
-
-			if (i == 0) {
-				if (size == 0
-				    && (srv_operation
-					== SRV_OPERATION_RESTORE
-					|| srv_operation
-					== SRV_OPERATION_RESTORE_EXPORT)) {
-					/* Tolerate an empty ib_logfile0
-					from a previous run of
-					mariabackup --prepare. */
-					return(DB_SUCCESS);
-				}
-				/* The first log file must consist of
-				at least the following 512-byte pages:
-				header, checkpoint page 1, empty,
-				checkpoint page 2, redo log page(s).
-
-				Mariabackup --prepare would create an
-				empty ib_logfile0. Tolerate it if there
-				are no other ib_logfile* files. */
-				if ((size != 0 || i != 0)
-				    && size <= OS_FILE_LOG_BLOCK_SIZE * 4) {
-					ib::error() << "Log file "
-						<< logfilename << " size "
-						<< size << " is too small";
-					return(srv_init_abort(DB_ERROR));
-				}
-				srv_log_file_size = size;
-			} else if (size != srv_log_file_size) {
-
-				ib::error() << "Log file " << logfilename
-					<< " is of different size " << size
-					<< " bytes than other log files "
-					<< srv_log_file_size << " bytes!";
-				return(srv_init_abort(DB_ERROR));
-			}
+			return srv_init_abort(err);
 		}
 
 		if (srv_log_file_size == 0) {
 			if (flushed_lsn < lsn_t(1000)) {
 				ib::error()
-					<< "Cannot create log files because"
+					<< "Cannot create log file because"
 					" data files are corrupt or the"
 					" database was not shut down cleanly"
 					" after creating the data files.";
 				return srv_init_abort(DB_ERROR);
 			}
 
-			strcpy(logfilename + dirnamelen, "ib_logfile0");
 			srv_log_file_size = srv_log_file_size_requested;
 
-			err = create_log_files(
-				logfilename, dirnamelen,
-				flushed_lsn, logfile0);
+			err = create_log_file(flushed_lsn, logfile0);
 
 			if (err == DB_SUCCESS) {
-				err = create_log_files_rename(
-					logfilename, dirnamelen,
-					flushed_lsn, logfile0);
+				err = create_log_file_rename(flushed_lsn,
+							     logfile0);
 			}
 
 			if (err != DB_SUCCESS) {
@@ -1592,35 +1508,26 @@ dberr_t srv_start(bool create_new_db)
 			/* Suppress the message about
 			crash recovery. */
 			flushed_lsn = log_get_lsn();
-			goto files_checked;
+			goto file_checked;
 		}
 
-		srv_n_log_files_found = i;
+		srv_log_file_found = log_file_found;
 
 		ut_a(srv_log_file_size <= log_group_max_size);
 
-		std::vector<std::string> file_names;
+		log_sys.log.set_file_path(get_log_file_path());
+		log_sys.log.open_file();
 
-		for (unsigned j = 0; j < srv_n_log_files_found; j++) {
-			sprintf(logfilename + dirnamelen, "ib_logfile%u", j);
-
-			file_names.emplace_back(logfilename);
-		}
-
-		log_sys.log.set_file_names(std::move(file_names));
-		log_sys.log.open_files();
-
-		log_sys.log.create(srv_n_log_files_found);
+		log_sys.log.create();
 
 		if (!log_set_capacity(srv_log_file_size_requested)) {
 			return(srv_init_abort(DB_ERROR));
 		}
 	}
 
-files_checked:
-	/* Open all log files and data files in the system
-	tablespace: we keep them open until database
-	shutdown */
+file_checked:
+	/* Open log file and data files in the systemtablespace: we keep
+        them open until database shutdown */
 
 	fil_open_system_tablespace_files();
 	ut_d(fil_system.sys_space->recv_size = srv_sys_space_size_debug);
@@ -1685,9 +1592,7 @@ files_checked:
 		err = fil_write_flushed_lsn(flushed_lsn);
 
 		if (err == DB_SUCCESS) {
-			err = create_log_files_rename(
-				logfilename, dirnamelen,
-				flushed_lsn, logfile0);
+			err = create_log_file_rename(flushed_lsn, logfile0);
 		}
 
 		if (err != DB_SUCCESS) {
@@ -1844,24 +1749,20 @@ files_checked:
 			Unless --export is specified, no further change to
 			InnoDB files is needed. */
 			ut_ad(!srv_force_recovery);
-			ut_ad(srv_n_log_files_found <= 1);
 			ut_ad(recv_no_log_write);
 			buf_flush_sync_all_buf_pools();
 			err = fil_write_flushed_lsn(log_get_lsn());
 			ut_ad(!buf_pool_check_no_pending_io());
-			log_sys.log.close_files();
+			log_sys.log.close_file();
 			if (err == DB_SUCCESS) {
 				bool trunc = srv_operation
 					== SRV_OPERATION_RESTORE;
-				/* Delete subsequent log files. */
-				delete_log_files(logfilename, dirnamelen,
-						 (uint)srv_n_log_files_found, trunc);
-				if (trunc) {
+				if (!trunc) {
+					delete_log_file("0");
+				} else {
+					auto logfile0 = get_log_file_path();
 					/* Truncate the first log file. */
-					strcpy(logfilename + dirnamelen,
-					       "ib_logfile0");
-					FILE* f = fopen(logfilename, "w");
-					fclose(f);
+					fclose(fopen(logfile0.c_str(), "w"));
 				}
 			}
 			return(err);
@@ -1869,14 +1770,14 @@ files_checked:
 
 		/* Upgrade or resize or rebuild the redo logs before
 		generating any dirty pages, so that the old redo log
-		files will not be written to. */
+		file will not be written to. */
 
 		if (srv_force_recovery == SRV_FORCE_NO_LOG_REDO) {
 			/* Completely ignore the redo log. */
 		} else if (srv_read_only_mode) {
 			/* Leave the redo log alone. */
 		} else if (srv_log_file_size_requested == srv_log_file_size
-			   && srv_n_log_files_found == srv_n_log_files
+			   && srv_log_file_found
 			   && log_sys.log.format
 			   == (srv_encrypt_log
 			       ? log_t::FORMAT_ENC_10_4
@@ -1885,14 +1786,15 @@ files_checked:
 			/* No need to add or remove encryption,
 			upgrade, downgrade, or resize. */
 		} else {
-			/* Prepare to delete the old redo log files */
-			flushed_lsn = srv_prepare_to_delete_redo_log_files(i);
+			/* Prepare to delete the old redo log file */
+			flushed_lsn = srv_prepare_to_delete_redo_log_file(
+				srv_log_file_found);
 
 			DBUG_EXECUTE_IF("innodb_log_abort_1",
 					return(srv_init_abort(DB_ERROR)););
 			/* Prohibit redo log writes from any other
 			threads until creating a log checkpoint at the
-			end of create_log_files(). */
+			end of create_log_file(). */
 			ut_d(recv_no_log_write = true);
 			ut_ad(!buf_pool_check_no_pending_io());
 
@@ -1910,27 +1812,23 @@ files_checked:
 				return(srv_init_abort(err));
 			}
 
-			/* Close and free the redo log files, so that
-			we can replace them. */
-			log_sys.log.close_files();
+			/* Close the redo log file, so that we can replace it */
+			log_sys.log.close_file();
 
 			DBUG_EXECUTE_IF("innodb_log_abort_5",
 					return(srv_init_abort(DB_ERROR)););
 			DBUG_PRINT("ib_log", ("After innodb_log_abort_5"));
 
-			ib::info() << "Starting to delete and rewrite log"
-				" files.";
+			ib::info()
+				<< "Starting to delete and rewrite log file.";
 
 			srv_log_file_size = srv_log_file_size_requested;
 
-			err = create_log_files(
-				logfilename, dirnamelen, flushed_lsn,
-				logfile0);
+			err = create_log_file(flushed_lsn, logfile0);
 
 			if (err == DB_SUCCESS) {
-				err = create_log_files_rename(
-					logfilename, dirnamelen, flushed_lsn,
-					logfile0);
+				err = create_log_file_rename(flushed_lsn,
+							     logfile0);
 			}
 
 			if (err != DB_SUCCESS) {

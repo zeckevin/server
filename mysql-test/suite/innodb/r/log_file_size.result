@@ -19,7 +19,7 @@ a
 INSERT INTO t1 VALUES (42);
 BEGIN;
 DELETE FROM t1;
-# restart: --innodb-log-files-in-group=3 --innodb-log-file-size=5M
+# restart: --innodb-log-file-size=5M
 SELECT * FROM t1;
 a
 42

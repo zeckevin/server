@@ -89,7 +89,7 @@ to file pages already before the recovery is finished: in this case no
 ibuf operations are allowed, as they could modify the pages read in the
 buffer pool before the pages have been recovered to the up-to-date state.
 
-TRUE means that recovery is running and no operations on the log files
+TRUE means that recovery is running and no operations on the log file
 are allowed yet: the variable name is misleading. */
 bool	recv_no_ibuf_operations;
 
@@ -870,7 +870,7 @@ void recv_sys_t::debug_free()
 out: the last read valid lsn
 @param[in]	end_lsn		read area end
 @return	whether no invalid blocks (e.g checksum mismatch) were found */
-bool log_t::files::read_log_seg(lsn_t* start_lsn, lsn_t end_lsn)
+bool log_t::file::read_log_seg(lsn_t* start_lsn, lsn_t end_lsn)
 {
 	ulint	len;
 	bool success = true;
@@ -1241,7 +1241,7 @@ recv_find_max_checkpoint(ulint* max_field)
 
 	if (*max_field == 0) {
 		/* Before 10.2.2, we could get here during database
-		initialization if we created an ib_logfile0 file that
+		initialization if we created an LOG_FILE_NAME file that
 		was filled with zeroes, and were killed. After
 		10.2.2, we would reject such a file already earlier,
 		when checking the file header. */
@@ -3025,7 +3025,7 @@ static bool recv_scan_log_recs(
 		}
 
 		if (scanned_lsn > recv_sys.scanned_lsn) {
-			ut_ad(!srv_log_files_created);
+			ut_ad(!srv_log_file_created);
 			if (!recv_needed_recovery) {
 				recv_needed_recovery = true;
 
@@ -3511,23 +3511,28 @@ recv_recovery_from_checkpoint_start(lsn_t flush_lsn)
 	    && recv_sys.mlog_checkpoint_lsn == checkpoint_lsn) {
 		/* The redo log is logically empty. */
 	} else if (checkpoint_lsn != flush_lsn) {
-		ut_ad(!srv_log_files_created);
+		ut_ad(!srv_log_file_created);
 
 		if (checkpoint_lsn + SIZE_OF_MLOG_CHECKPOINT < flush_lsn) {
-			ib::warn() << "Are you sure you are using the"
-				" right ib_logfiles to start up the database?"
-				" Log sequence number in the ib_logfiles is "
-				<< checkpoint_lsn << ", less than the"
-				" log sequence number in the first system"
-				" tablespace file header, " << flush_lsn << ".";
+			ib::warn()
+				<< "Are you sure you are using the right "
+				<< LOG_FILE_NAME
+				<< " to start up the database? Log sequence "
+				   "number in the "
+				<< LOG_FILE_NAME << " is " << checkpoint_lsn
+				<< ", less than the log sequence number in "
+				   "the first system tablespace file header, "
+				<< flush_lsn << ".";
 		}
 
 		if (!recv_needed_recovery) {
 
-			ib::info() << "The log sequence number " << flush_lsn
+			ib::info()
+				<< "The log sequence number " << flush_lsn
 				<< " in the system tablespace does not match"
-				" the log sequence number " << checkpoint_lsn
-				<< " in the ib_logfiles!";
+				   " the log sequence number "
+				<< checkpoint_lsn << " in the "
+				<< LOG_FILE_NAME << "!";
 
 			if (srv_read_only_mode) {
 				ib::error() << "innodb_read_only"
