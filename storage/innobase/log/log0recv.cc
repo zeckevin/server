@@ -324,7 +324,7 @@ public:
 				}
 				mutex_exit(&recv_sys.mutex);
 				block->page.ibuf_exist = ibuf_page_exists(
-					block->page);
+					block->page.id, block->zip_size());
 				mtr.commit();
 				mtr.start();
 				mutex_enter(&recv_sys.mutex);
