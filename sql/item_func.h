@@ -2681,6 +2681,15 @@ class Item_func_get_lock :public Item_long_func
   { return get_item_copy<Item_func_get_lock>(thd, this); }
 };
 
+class Item_func_release_all_locks :public Item_long_func 
+{
+public:
+  Item_func_release_all_locks(THD *thd): Item_long_func(thd) { unsigned_flag=1; }
+  longlong val_int() override;
+  const char *func_name() const override { return "release_all_locks"; }
+  Item *get_copy(THD *thd) override  { return get_item_copy<Item_func_release_all_locks>(thd,this); }
+};
+
 class Item_func_release_lock :public Item_long_func
 {
   bool check_arguments() const

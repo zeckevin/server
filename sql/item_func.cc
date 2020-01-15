@@ -4076,6 +4076,29 @@ longlong Item_func_get_lock::val_int()
   DBUG_RETURN(1);
 }
 
+/*
+  Release all user level locks.
+  @return
+    - N if N-lock released
+    - 0 if lock wasn't held
+*/
+longlong Item_func_release_all_locks::val_int()
+{
+  DBUG_ASSERT(fixed == 1);
+  THD *thd= current_thd;
+  User_level_lock *ull;
+  DBUG_ENTER("Item_func_release_all_locks::val_int");
+  ulong num_unlocked= 0;
+  for (ulong i= 0; i < thd->ull_hash.records; i++)
+  {
+    ull= (User_level_lock *) my_hash_element(&thd->ull_hash, i);
+    thd->mdl_context.release_lock(ull->lock);
+    num_unlocked += ull->refs;
+    my_free(ull);
+  }
+  my_hash_free(&thd->ull_hash);
+  DBUG_RETURN(num_unlocked);
+}
 
 /**
   Release a user level lock.

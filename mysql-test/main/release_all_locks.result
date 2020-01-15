@@ -1,0 +1,93 @@
+#
+#  MDEV-10569: RELEASE_ALL_LOCKS SQL-function to release all named locks
+#
+DROP Table if exists t1,t2;
+CREATE Table t1(lock_name varchar(15) default NULL);
+CREATE Table t2(lock_name varchar(15) default NULL);
+#
+# Test function without any locks
+SELECT RELEASE_ALL_LOCKS();
+RELEASE_ALL_LOCKS()
+0
+# Test function with one lock only
+SELECT GET_LOCK ('l1',10);
+GET_LOCK ('l1',10)
+1
+SELECT RELEASE_ALL_LOCKS();
+RELEASE_ALL_LOCKS()
+1
+SELECT LOCK_MODE, LOCK_TYPE, TABLE_SCHEMA, TABLE_NAME FROM information_schema.metadata_lock_info;
+LOCK_MODE	LOCK_TYPE	TABLE_SCHEMA	TABLE_NAME
+# Test function with multiple locks
+INSERT Into t1 Values ('l1'),('l2'),('l3'),('l4'),('l5'),('l6'),('l7'),('l8'),('l9'),('l10'),('l11'),('l12'),('l13'),('l14'),('l15');
+SELECT GET_LOCK(t1.lock_name,10) FROM t1;
+GET_LOCK(t1.lock_name,10)
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+SELECT LOCK_MODE, LOCK_TYPE, TABLE_SCHEMA, TABLE_NAME FROM information_schema.metadata_lock_info;
+LOCK_MODE	LOCK_TYPE	TABLE_SCHEMA	TABLE_NAME
+MDL_SHARED_NO_WRITE	User lock	l13	
+MDL_SHARED_NO_WRITE	User lock	l11	
+MDL_SHARED_NO_WRITE	User lock	l15	
+MDL_SHARED_NO_WRITE	User lock	l1	
+MDL_SHARED_NO_WRITE	User lock	l9	
+MDL_SHARED_NO_WRITE	User lock	l10	
+MDL_SHARED_NO_WRITE	User lock	l5	
+MDL_SHARED_NO_WRITE	User lock	l7	
+MDL_SHARED_NO_WRITE	User lock	l3	
+MDL_SHARED_NO_WRITE	User lock	l8	
+MDL_SHARED_NO_WRITE	User lock	l4	
+MDL_SHARED_NO_WRITE	User lock	l6	
+MDL_SHARED_NO_WRITE	User lock	l14	
+MDL_SHARED_NO_WRITE	User lock	l2	
+MDL_SHARED_NO_WRITE	User lock	l12	
+SELECT RELEASE_ALL_LOCKS();
+RELEASE_ALL_LOCKS()
+15
+SELECT LOCK_MODE, LOCK_TYPE, TABLE_SCHEMA, TABLE_NAME FROM information_schema.metadata_lock_info;
+LOCK_MODE	LOCK_TYPE	TABLE_SCHEMA	TABLE_NAME
+# Test function with recursive locks
+REPLACE Into t2 Values ('l1'),('l2'),('l2'),('l3'),('l3'),('l3'),('l4'),('l4'),('l4'),('l4'),('l5'),('l5'),('l5'),('l5'),('l5');
+SELECT GET_LOCK(t2.lock_name,10) FROM t2;
+GET_LOCK(t2.lock_name,10)
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+SELECT LOCK_MODE, LOCK_TYPE, TABLE_SCHEMA, TABLE_NAME FROM information_schema.metadata_lock_info;
+LOCK_MODE	LOCK_TYPE	TABLE_SCHEMA	TABLE_NAME
+MDL_SHARED_NO_WRITE	User lock	l1	
+MDL_SHARED_NO_WRITE	User lock	l5	
+MDL_SHARED_NO_WRITE	User lock	l3	
+MDL_SHARED_NO_WRITE	User lock	l4	
+MDL_SHARED_NO_WRITE	User lock	l2	
+SELECT RELEASE_ALL_LOCKS();
+RELEASE_ALL_LOCKS()
+15
+SELECT LOCK_MODE, LOCK_TYPE, TABLE_SCHEMA, TABLE_NAME FROM information_schema.metadata_lock_info;
+LOCK_MODE	LOCK_TYPE	TABLE_SCHEMA	TABLE_NAME
+DROP Table t1,t2;
