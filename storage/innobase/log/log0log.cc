@@ -556,8 +556,6 @@ void log_t::create()
   write_lsn= lsn;
   flushed_to_disk_lsn= 0;
   n_pending_flushes= 0;
-  flush_event = os_event_create("log_flush_event");
-  os_event_set(flush_event);
   n_log_ios= 0;
   n_log_ios_old= 0;
   log_group_capacity= 0;
@@ -904,8 +902,6 @@ log_write_flush_to_disk_low()
 	log_sys.flushed_to_disk_lsn = log_sys.current_flush_lsn;
 
 	log_sys.n_pending_flushes--;
-
-	os_event_set(log_sys.flush_event);
 }
 
 /** Switch the log buffer in use, and copy the content of last block
@@ -943,6 +939,124 @@ log_buffer_switch()
 	log_sys.buf_next_to_write = log_sys.buf_free;
 }
 
+/* A per-thread helper structure, used to wait for lsn flushing.*/
+struct lsn_waiter_t
+{
+  std::mutex m_mtx; /** mutex to protect the struct.*/
+  std::condition_variable m_cv; /** condition var for waiting */
+  lsn_t m_wait_lsn; /** lsn to wait for*/
+  lsn_t m_wake_lsn; /** set by flush_event_t::set().*/
+  lsn_waiter_t() :m_mtx(), m_cv(), m_wait_lsn(), m_wake_lsn() {}
+};
+
+static thread_local lsn_waiter_t lsn_waiter;
+
+/**
+  A special synchronization primitive with 2 operations
+
+  1. wait(lsn) : block current thread until set(set_lsn) is called
+    with set_lsn > lsn
+  2. set(set_lsn) : release threads with lsn < set_lsn
+
+  There is a tweak set() - sometimes set() release 1 thread more than necessary,
+  i.e a thread waiting for lsn < set_lsn. 	In this case wait() will return false.
+  This is necessary for the group commit to work correctly, i.e it helps
+  electing new "group commit leader".
+*/
+class flush_event_t
+{
+  std::mutex m_mtx;	/* Mutex protecting the structure.*/
+  std::vector<lsn_waiter_t*> m_waiters; 	/** waiters queue.*/
+  lsn_t m_max_lsn;	/** Max lsn used in set() so far*/
+
+public:
+
+  flush_event_t() :m_mtx(), m_waiters(), m_max_lsn() {}
+
+  /*
+  Block current thread until set() is called
+  with lsn greater or equal that the parameter.
+
+  @return true : flushed lsn greater than or equal to lsn parameter
+  @return false : current thread has to retry flushing (e.g log_write_up_to again)
+  */
+  bool wait(lsn_t lsn)
+  {
+    std::unique_lock<std::mutex> lk(m_mtx);
+    if (lsn <= m_max_lsn)
+      return true;
+
+    /* Register waiter in queue.
+    No need to protect the lsn_waiter - as it is tls variable
+    which is not (yet) in any global container, i.e not visible
+    to other threads.
+    */
+    lsn_waiter.m_wait_lsn = lsn;
+    lsn_waiter.m_wake_lsn = 0;
+    m_waiters.push_back(&lsn_waiter);
+    lk.unlock();
+
+    /* Put yourself to sleep.*/
+    thd_wait_begin(nullptr, THD_WAIT_SYNC);
+
+    std::unique_lock<std::mutex> waiter_lk(lsn_waiter.m_mtx);
+    while (lsn_waiter.m_wake_lsn == 0)
+      lsn_waiter.m_cv.wait(waiter_lk);
+
+    bool ret = lsn_waiter.m_wake_lsn >= lsn;
+    waiter_lk.unlock();
+    thd_wait_end(nullptr);
+    return ret;
+  }
+
+  /* Resume threads waiting for lsn up to flush_lsn.
+  @return true - if queue is empty after drain, false otherwise
+  */
+  void set(lsn_t flush_lsn)
+  {
+    std::unique_lock<std::mutex> lk(m_mtx);
+    if (m_max_lsn < flush_lsn)
+      m_max_lsn = flush_lsn;
+    else
+      return;
+
+    if (m_waiters.empty())
+      return;
+
+    for (auto e : m_waiters)
+    {
+      if (e->m_wait_lsn <= flush_lsn)
+      {
+        std::unique_lock<std::mutex> waiter_lk(e->m_mtx);
+        e->m_wake_lsn = flush_lsn;
+        e->m_cv.notify_one();
+      }
+    }
+
+    auto it =
+      std::remove_if(m_waiters.begin(), m_waiters.end(),
+        [flush_lsn](lsn_waiter_t* e) {return e->m_wait_lsn <= flush_lsn; });
+
+    m_waiters.erase(it, m_waiters.end());
+
+    if (!m_waiters.empty())
+    {
+      /* We have to wakeup a waiter, so that we continue to drain the
+      waiters queue.Theoretically, we could wait for master task to
+      do periodic  1 second flushing, but the delay could be too long.
+      */
+      lsn_waiter_t* last = m_waiters.back();
+      m_waiters.pop_back();
+
+      std::unique_lock<std::mutex> waiter_lk(last->m_mtx);
+      last->m_wake_lsn = flush_lsn;
+      last->m_cv.notify_one();
+    }
+  }
+};
+
+static flush_event_t flush_event;
+
 /** Ensure that the log has been written to the log file up to a given
 log entry (such as that of a transaction commit). Start a new write, or
 wait and check if an already running write is covering the request.
@@ -953,9 +1067,6 @@ be flushed to the file system
 @param[in]	rotate_key	whether to rotate the encryption key */
 void log_write_up_to(lsn_t lsn, bool flush_to_disk, bool rotate_key)
 {
-#ifdef UNIV_DEBUG
-	ulint		loop_count	= 0;
-#endif /* UNIV_DEBUG */
 	byte*           write_buf;
 	lsn_t           write_lsn;
 
@@ -969,8 +1080,6 @@ void log_write_up_to(lsn_t lsn, bool flush_to_disk, bool rotate_key)
 		return;
 	}
 
-loop:
-	ut_ad(++loop_count < 128);
 
 #if UNIV_WORD_SIZE > 7
 	/* We can do a dirty read of LSN. */
@@ -982,6 +1091,8 @@ loop:
 		return;
 	}
 #endif
+
+loop:
 
 	log_write_mutex_enter();
 	ut_ad(!recv_no_log_write);
@@ -995,27 +1106,15 @@ loop:
 		return;
 	}
 
-	/* If it is a write call we should just go ahead and do it
-	as we checked that write_lsn is not where we'd like it to
-	be. If we have to flush as well then we check if there is a
-	pending flush and based on that we wait for it to finish
-	before proceeding further. */
-	if (flush_to_disk
-	    && (log_sys.n_pending_flushes > 0
-		|| !os_event_is_set(log_sys.flush_event))) {
-		/* Figure out if the current flush will do the job
-		for us. */
-		bool work_done = log_sys.current_flush_lsn >= lsn;
-
+	/* If there is an ongoing flush, and we have to flush as well,
+	wait for flush, before proceeding. There is a chance that
+	current lsn will be flushed as part of "group commit".*/
+	if (flush_to_disk && log_sys.n_pending_flushes) {
 		log_write_mutex_exit();
-
-		os_event_wait(log_sys.flush_event);
-
-		if (work_done) {
+		if (flush_event.wait(lsn))
 			return;
-		} else {
-			goto loop;
-		}
+
+		goto loop;
 	}
 
 	log_mutex_enter();
@@ -1039,7 +1138,6 @@ loop:
 	if (flush_to_disk) {
 		log_sys.n_pending_flushes++;
 		log_sys.current_flush_lsn = log_sys.lsn;
-		os_event_reset(log_sys.flush_event);
 
 		if (log_sys.buf_free == log_sys.buf_next_to_write) {
 			/* Nothing to write, flush only */
@@ -1127,7 +1225,7 @@ loop:
 		log_write_flush_to_disk_low();
 		ib_uint64_t flush_lsn = log_sys.flushed_to_disk_lsn;
 		log_mutex_exit();
-
+		flush_event.set(flush_lsn);
 		innobase_mysql_log_notify(flush_lsn);
 	}
 }
@@ -1935,7 +2033,6 @@ void log_t::close()
   ut_free_dodump(buf, srv_log_buffer_size * 2);
   buf = NULL;
 
-  os_event_destroy(flush_event);
   mutex_free(&mutex);
   mutex_free(&write_mutex);
   mutex_free(&log_flush_order_mutex);
