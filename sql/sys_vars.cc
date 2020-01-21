@@ -3870,13 +3870,6 @@ static Sys_var_ulonglong Sys_tmp_disk_table_size(
        DEFAULT((ulonglong)~(intptr)0),
        BLOCK_SIZE(1));
 
-static Sys_var_mybool Sys_timed_mutexes(
-       "timed_mutexes",
-       "Specify whether to time mutexes. Deprecated, has no effect.",
-       GLOBAL_VAR(timed_mutexes), CMD_LINE(OPT_ARG), DEFAULT(0),
-       NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(0), ON_UPDATE(0),
-       DEPRECATED("")); // since 5.5.39
-
 static Sys_var_charptr Sys_version(
        "version", "Server version number. It may also include a suffix "
        "with configuration or build information. -debug indicates "
