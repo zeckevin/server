@@ -3867,13 +3867,17 @@ dict_index_calc_min_rec_len(
 	return(sum);
 }
 
+#include "sql_table.h"
+TABLE *thd_get_open_tables(const MYSQL_THD thd);
+TABLE *find_locked_table(TABLE *list, const char *db, const char *table_name);
+
 /**********************************************************************//**
 Outputs info on a foreign key of a table in a format suitable for
 CREATE TABLE. */
 std::string
 dict_print_info_on_foreign_key_in_create_format(
 /*============================================*/
-	trx_t*		trx,		/*!< in: transaction */
+	trx_t*		trx,		/*!< in: transaction, can be NULL */
 	dict_foreign_t*	foreign,	/*!< in: foreign key constraint */
 	ibool		add_newline)	/*!< in: whether to add a newline */
 {
@@ -3903,14 +3907,61 @@ dict_print_info_on_foreign_key_in_create_format(
 	str.append(innobase_quote_identifier(trx, stripped_id));
 	str.append(" FOREIGN KEY (");
 
+	const char *period_name = NULL, *ref_period_name = NULL;
+	ulint n_fields = foreign->n_fields;
+
+	if (foreign->has_period)
+	{
+		n_fields -= 2;
+		if (foreign->foreign_table->versioned())
+			n_fields--;
+
+		if (!trx)
+		{
+			return "ERROR (period)";
+		}
+
+		char	db_buf[NAME_LEN + 1];
+		char	tbl_buf[NAME_LEN + 1];
+		ulint	db_buf_len, tbl_buf_len;
+
+		if (!foreign->foreign_table->parse_name<true>(
+		        db_buf, tbl_buf, &db_buf_len, &tbl_buf_len)) {
+			ut_ad(false);
+			return "ERROR (period)";
+		}
+		THD * thd = trx->mysql_thd;
+		TABLE *mysql_table = find_locked_table(
+						thd_get_open_tables(thd),
+						db_buf, tbl_buf);
+		DBUG_ASSERT(mysql_table);
+		period_name = mysql_table->s->period.name.str;
+
+		if (!foreign->referenced_table->parse_name<true>(
+		        db_buf, tbl_buf, &db_buf_len, &tbl_buf_len)) {
+			ut_ad(false);
+			return "ERROR (period)";
+		}
+		mysql_table = find_locked_table(thd_get_open_tables(thd),
+						db_buf, tbl_buf);
+		DBUG_ASSERT(mysql_table);
+		ref_period_name = mysql_table->s->period.name.str;
+	}
+
 	for (i = 0;;) {
 		str.append(innobase_quote_identifier(trx, foreign->foreign_col_names[i]));
 
-		if (++i < foreign->n_fields) {
+		if (++i < n_fields) {
 			str.append(", ");
 		} else {
 			break;
 		}
+	}
+
+	if (foreign->has_period)
+	{
+		str.append(", period ");
+		str.append(innobase_quote_identifier(trx, period_name));
 	}
 
 	str.append(") REFERENCES ");
@@ -3932,11 +3983,17 @@ dict_print_info_on_foreign_key_in_create_format(
 		str.append(innobase_quote_identifier(trx,
 				foreign->referenced_col_names[i]));
 
-		if (++i < foreign->n_fields) {
+		if (++i < n_fields) {
 			str.append(", ");
 		} else {
 			break;
 		}
+	}
+
+	if (foreign->has_period)
+	{
+		str.append(", period ");
+		str.append(innobase_quote_identifier(trx, ref_period_name));
 	}
 
 	str.append(")");
