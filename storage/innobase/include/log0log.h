@@ -449,6 +449,7 @@ typedef ib_mutex_t	LogSysMutex;
 typedef ib_mutex_t	FlushOrderMutex;
 
 extern my_bool	srv_read_only_mode;
+extern ulong innodb_log_io_method;
 
 /** Redo log buffer */
 struct log_t{
@@ -516,6 +517,8 @@ struct log_t{
 
   /** Log files. Protected by mutex or write_mutex. */
   struct files {
+    class file_io;
+
     /** number of files */
     ulint				n_files;
     /** format of the redo log: e.g., FORMAT_10_4 */
@@ -530,14 +533,14 @@ struct log_t{
     lsn_t				lsn;
     /** the byte offset of the above lsn */
     lsn_t				lsn_offset;
+    /** file descriptors for all log files */
+    std::vector<file_io*> files;
 
   public:
     /** used only in recovery: recovery scan succeeded up to this
     lsn in this log group */
     lsn_t				scanned_lsn;
 
-    /** file descriptors for all log files */
-    std::vector<pfs_os_file_t> files;
     /** file names for all log files */
     std::vector<std::string> file_names;
 

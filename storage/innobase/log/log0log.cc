@@ -84,6 +84,8 @@ reduce the size of the log.
 /** Redo log system */
 log_t	log_sys;
 
+ulong innodb_log_io_method;
+
 /* Next log block number to do dummy record filling if no log records written
 for a while */
 static ulint		next_lbn_to_pad = 0;
@@ -587,6 +589,127 @@ void log_t::create()
   }
 }
 
+
+class log_t::files::file_io
+{
+public:
+  virtual ~file_io() {}
+  virtual bool open(std::string path)= 0;
+  virtual bool close()= 0;
+  virtual dberr_t read(os_offset_t offset, span<byte> buf)= 0;
+  virtual dberr_t write(const char *name, os_offset_t offset,
+                        span<byte> buf)= 0;
+  virtual bool flush_data_only()= 0;
+};
+
+
+class file_os_io: public log_t::files::file_io
+{
+  pfs_os_file_t fd;
+public:
+  bool open(std::string path)
+  {
+    bool success;
+    fd= os_file_create(innodb_log_file_key, path.c_str(),
+                       OS_FILE_OPEN | OS_FILE_ON_ERROR_NO_EXIT,
+                       OS_FILE_NORMAL, OS_LOG_FILE,
+                       srv_read_only_mode, &success);
+    return success;
+  }
+  bool close() { return os_file_close(fd); }
+  dberr_t read(os_offset_t offset, span<byte> buf)
+  {
+    return os_file_read(IORequestRead, fd, buf.data(), offset, buf.size());
+  }
+  dberr_t write(const char *name, os_offset_t offset, span<byte> buf)
+  {
+    return os_file_write(IORequestWrite, name, fd, buf.data(), offset,
+                         buf.size());
+  }
+  bool flush_data_only() { return os_file_flush_data(fd); }
+};
+
+
+class file_mmap_io: public log_t::files::file_io
+{
+  File fd;
+protected:
+  void *addr;
+  size_t length;
+public:
+  bool open(std::string path)
+  {
+    fd= mysql_file_open(innodb_log_file_key, path.c_str(),
+                        srv_read_only_mode ? O_RDONLY : O_RDWR, MYF(MY_WME));
+    if (fd >= 0)
+    {
+      MY_STAT sb;
+      if (!mysql_file_fstat(fd, &sb, MYF(0)))
+      {
+        length= sb.st_size;
+        addr= my_mmap(0, length,
+                      srv_read_only_mode ? PROT_READ : PROT_READ | PROT_WRITE,
+                      MAP_SHARED, fd, 0);
+        return addr != MAP_FAILED;
+      }
+      mysql_file_close(fd, MYF(MY_WME));
+    }
+    return false;
+  }
+  bool close()
+  {
+    int err= my_munmap(addr, length);
+    return !mysql_file_close(fd, MYF(MY_WME)) && !err;
+  }
+  dberr_t read(os_offset_t offset, span<byte> buf)
+  {
+    memcpy(buf.data(), (char*) addr + offset, buf.size());
+    return DB_SUCCESS;
+  }
+  dberr_t write(const char *, os_offset_t offset, span<byte> buf)
+  {
+    memcpy((char*) addr + offset, buf.data(), buf.size());
+    return DB_SUCCESS;
+  }
+  bool flush_data_only() { return !my_msync(fd, addr, length, MS_SYNC); }
+};
+
+
+#ifdef HAVE_PMEM
+#include <libpmem.h>
+#endif
+class file_pmem_io: public file_mmap_io
+{
+public:
+#ifdef HAVE_PMEM
+  bool open(std::string path)
+  {
+    int is_pmem;
+    addr= pmem_map_file(path.c_str(), 0, 0, 0, &length, &is_pmem);
+    if (addr && !is_pmem)
+      ib::warn() << "The redo log \"pmem\" IO method is used with non-pmem "
+                    "storage. Beware of potential data loss: sync is no-op.";
+    return addr;
+  }
+  bool close() { return !pmem_unmap(addr, length); }
+  dberr_t write(const char *name, os_offset_t offset, span<byte> buf)
+  {
+    dberr_t rc= file_mmap_io::write(name, offset, buf);
+    pmem_persist((char*) addr + offset, buf.size());
+    return rc;
+  }
+  bool flush_data_only() { return true; }
+#else
+  bool open(std::string path)
+  {
+    ib::warn() << "The redo log \"pmem\" IO method is unavailable, "
+                  "falling back to \"mmap\" IO.";
+    return file_mmap_io::open(path);
+  }
+#endif
+};
+
+
 void log_t::files::set_file_names(std::vector<std::string> names)
 {
   file_names= std::move(names);
@@ -598,15 +721,21 @@ void log_t::files::open_files()
   files.reserve(file_names.size());
   for (const auto &name : file_names)
   {
-    bool success;
-    files.push_back(os_file_create(innodb_log_file_key, name.c_str(),
-                                   OS_FILE_OPEN | OS_FILE_ON_ERROR_NO_EXIT,
-                                   OS_FILE_NORMAL, OS_LOG_FILE,
-                                   srv_read_only_mode, &success));
-    if (!success)
+    file_io *io;
+
+    switch (innodb_log_io_method)
+    {
+      case 1: io= new file_mmap_io; break;
+      case 2: io= new file_pmem_io; break;
+      default: io= new file_os_io;
+    }
+    ut_a(io);
+
+    if (!io->open(name.c_str()))
     {
       ib::fatal() << "os_file_create(" << name << ") failed";
     }
+    files.push_back(io);
   }
 }
 
@@ -617,8 +746,7 @@ void log_t::files::read(size_t total_offset, span<byte> buf)
   const size_t file_idx= total_offset / static_cast<size_t>(file_size);
   const size_t offset= total_offset % static_cast<size_t>(file_size);
 
-  if (const dberr_t err= os_file_read(IORequestRead, files[file_idx],
-                                      buf.data(), offset, buf.size()))
+  if (const dberr_t err= files[file_idx]->read(offset, buf))
   {
     ib::fatal() << "os_file_read(" << file_names[file_idx] << ") returned "
                 << err;
@@ -632,9 +760,8 @@ void log_t::files::write(size_t total_offset, span<byte> buf)
   const size_t file_idx= total_offset / static_cast<size_t>(file_size);
   const size_t offset= total_offset % static_cast<size_t>(file_size);
 
-  if (const dberr_t err=
-          os_file_write(IORequestWrite, file_names[file_idx].c_str(),
-                        files[file_idx], buf.data(), offset, buf.size()))
+  if (const dberr_t err= files[file_idx]->write(file_names[file_idx].c_str(),
+                                                offset, buf))
   {
     ib::fatal() << "os_file_write(" << file_names[file_idx] << ") returned "
                 << err;
@@ -648,7 +775,7 @@ void log_t::files::flush_data_only()
   log_sys.pending_flushes.fetch_add(1, std::memory_order_acquire);
   for (auto it= files.begin(), end= files.end(); it != end; ++it)
   {
-    if (!os_file_flush_data(*it))
+    if (!(*it)->flush_data_only())
     {
       const auto idx= std::distance(files.begin(), it);
       ib::fatal() << "os_file_flush_data(" << file_names[idx] << ") failed";
@@ -662,11 +789,12 @@ void log_t::files::close_files()
 {
   for (auto it= files.begin(), end= files.end(); it != end; ++it)
   {
-    if (!os_file_close(*it))
+    if (!(*it)->close())
     {
       const auto idx= std::distance(files.begin(), it);
       ib::fatal() << "os_file_close(" << file_names[idx] << ") failed";
     }
+    delete *it;
   }
   files.clear();
 }
