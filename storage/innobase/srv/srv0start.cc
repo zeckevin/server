@@ -3,7 +3,7 @@
 Copyright (c) 1996, 2017, Oracle and/or its affiliates. All rights reserved.
 Copyright (c) 2008, Google Inc.
 Copyright (c) 2009, Percona Inc.
-Copyright (c) 2013, 2019, MariaDB Corporation.
+Copyright (c) 2013, 2020, MariaDB Corporation.
 
 Portions of this file contain modifications contributed and copyrighted by
 Google, Inc. Those modifications are gratefully acknowledged and are described
@@ -52,6 +52,7 @@ Created 2/16/1996 Heikki Tuuri
 #include "data0type.h"
 #include "dict0dict.h"
 #include "buf0buf.h"
+#include "buf0dblwr.h"
 #include "buf0dump.h"
 #include "os0file.h"
 #include "os0thread.h"
