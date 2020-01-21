@@ -459,7 +459,7 @@ Atomic_counter<uint32_t> thread_count;
 bool shutdown_wait_for_slaves;
 int32 slave_open_temp_tables;
 ulong thread_created;
-ulong back_log, connect_timeout, concurrency, server_id;
+ulong back_log, connect_timeout, server_id;
 ulong what_to_log;
 ulong slow_launch_time;
 ulong open_files_limit, max_binlog_size;
