@@ -5042,6 +5042,9 @@ static int init_server_components()
          compatibility, but do not have any effect otherwise, they behave
          as if supplied with --loose. Whenever a deprecated option is removed
          it should be appended here. */
+      {"skip-bdb", OPT_DEPRECATED_OPTION,
+       "Deprecated option; Exist only for compatibility with old my.cnf files",
+       0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0},
       {0, 0, 0, 0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0}
     };
     /*
@@ -6722,9 +6725,6 @@ struct my_option my_long_options[]=
    GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
   {"silent-startup", OPT_SILENT, "Don't print [Note] to the error log during startup.",
    &opt_silent_startup, &opt_silent_startup, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
-  {"skip-bdb", OPT_DEPRECATED_OPTION,
-   "Deprecated option; Exist only for compatibility with old my.cnf files",
-   0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0},
 #ifndef DISABLE_GRANT_OPTIONS
   {"skip-grant-tables", 0,
    "Start without grant tables. This gives all users FULL ACCESS to all tables.",
