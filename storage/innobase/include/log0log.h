@@ -507,7 +507,7 @@ struct log_t{
 	MY_ALIGNED(CACHE_LINE_SIZE)
 	LogSysMutex	mutex;		/*!< mutex protecting the log */
 	MY_ALIGNED(CACHE_LINE_SIZE)
-	LogSysMutex	write_mutex;	/*!< mutex protecting writing to log */
+	BlockSysMutex	write_mutex;	/*!< mutex protecting writing to log */
 	MY_ALIGNED(CACHE_LINE_SIZE)
 	FlushOrderMutex	log_flush_order_mutex;/*!< mutex to serialize access to
 					the flush list when we are putting
