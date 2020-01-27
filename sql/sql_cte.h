@@ -112,6 +112,7 @@ public:
     always empty.
   */
   List <LEX_CSTRING> column_list;
+  List <LEX_CSTRING> *cycle_list;
   /* The query that specifies the table introduced by this with element */
   st_select_lex_unit *spec;
   /* 
@@ -169,7 +170,7 @@ public:
       sq_dep_map(0), work_dep_map(0), mutually_recursive(0),
       top_level_dep_map(0), sq_rec_ref(NULL),
       next_mutually_recursive(NULL), references(0), 
-      query_name(name), column_list(list), spec(unit),
+      query_name(name), column_list(list), cycle_list(0), spec(unit),
       is_recursive(false), rec_outer_references(0), with_anchor(false),
       level(0), rec_result(NULL)
   { unit->with_element= this; }
@@ -258,6 +259,8 @@ public:
   bool instantiate_tmp_tables();
 
   void prepare_for_next_iteration();
+
+  void set_cycle_list(List<LEX_CSTRING> *cycle_list_arg);
 
   friend class With_clause;
 };
