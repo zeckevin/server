@@ -1142,9 +1142,7 @@ loop:
 		if (log_sys.buf_free == log_sys.buf_next_to_write) {
 			/* Nothing to write, flush only */
 			log_mutex_exit_all();
-			log_write_flush_to_disk_low();
-			log_mutex_exit();
-			return;
+			goto flush;
 		}
 	}
 
@@ -1222,6 +1220,7 @@ loop:
 	log_write_mutex_exit();
 
 	if (flush_to_disk) {
+flush:
 		log_write_flush_to_disk_low();
 		ib_uint64_t flush_lsn = log_sys.flushed_to_disk_lsn;
 		log_mutex_exit();
