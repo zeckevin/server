@@ -642,7 +642,7 @@ struct log_t{
 					AND flushed to disk */
 	std::atomic<size_t> pending_flushes; /*!< system calls in progress */
 	std::atomic<size_t> flushes;	/*!< system calls counter */
-	ulint		n_pending_flushes;/*!< number of currently
+	std::atomic<ulint>	n_pending_flushes;/*!< number of currently
 					pending flushes; protected by
 					log_sys.mutex */
 	ulint		n_log_ios;	/*!< number of log i/os initiated thus

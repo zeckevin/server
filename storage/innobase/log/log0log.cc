@@ -901,7 +901,6 @@ log_write_flush_to_disk_low()
 	log_mutex_enter();
 	log_sys.flushed_to_disk_lsn = log_sys.current_flush_lsn;
 
-	log_sys.n_pending_flushes--;
 }
 
 /** Switch the log buffer in use, and copy the content of last block
@@ -969,6 +968,22 @@ class flush_event_t
   std::vector<lsn_waiter_t*> m_waiters; 	/** waiters queue.*/
   lsn_t m_max_lsn;	/** Max lsn used in set() so far*/
 
+  void wake_no_lock()
+  {
+    if (!m_waiters.empty())
+    {
+      /* We have to wakeup a waiter, so that we continue to drain the
+      waiters queue.Theoretically, we could wait for master task to
+      do periodic  1 second flushing, but the delay could be too long.
+      */
+      lsn_waiter_t* last = m_waiters.back();
+      m_waiters.pop_back();
+
+      std::unique_lock<std::mutex> waiter_lk(last->m_mtx);
+      last->m_wake_lsn = 1;
+      last->m_cv.notify_one();
+    }
+  }
 public:
 
   flush_event_t() :m_mtx(), m_waiters(), m_max_lsn() {}
@@ -1018,7 +1033,10 @@ public:
     if (m_max_lsn < flush_lsn)
       m_max_lsn = flush_lsn;
     else
+    {
+      wake_no_lock();
       return;
+    }
 
     if (m_waiters.empty())
       return;
@@ -1038,20 +1056,12 @@ public:
         [flush_lsn](lsn_waiter_t* e) {return e->m_wait_lsn <= flush_lsn; });
 
     m_waiters.erase(it, m_waiters.end());
-
-    if (!m_waiters.empty())
-    {
-      /* We have to wakeup a waiter, so that we continue to drain the
-      waiters queue.Theoretically, we could wait for master task to
-      do periodic  1 second flushing, but the delay could be too long.
-      */
-      lsn_waiter_t* last = m_waiters.back();
-      m_waiters.pop_back();
-
-      std::unique_lock<std::mutex> waiter_lk(last->m_mtx);
-      last->m_wake_lsn = flush_lsn;
-      last->m_cv.notify_one();
-    }
+    wake_no_lock();
+  }
+  void wake()
+  {
+    std::unique_lock<std::mutex> lk(m_mtx);
+    wake_no_lock();
   }
 };
 
@@ -1092,7 +1102,10 @@ void log_write_up_to(lsn_t lsn, bool flush_to_disk, bool rotate_key)
 	}
 #endif
 
-loop:
+	while (flush_to_disk && log_sys.n_pending_flushes.exchange(1)) {
+		if (flush_event.wait(lsn))
+			return;
+	}
 
 	log_write_mutex_enter();
 	ut_ad(!recv_no_log_write);
@@ -1103,18 +1116,11 @@ loop:
 
 	if (limit_lsn >= lsn) {
 		log_write_mutex_exit();
+		if (flush_to_disk) {
+			log_sys.n_pending_flushes = 0;
+			flush_event.wake();
+		}
 		return;
-	}
-
-	/* If there is an ongoing flush, and we have to flush as well,
-	wait for flush, before proceeding. There is a chance that
-	current lsn will be flushed as part of "group commit".*/
-	if (flush_to_disk && log_sys.n_pending_flushes) {
-		log_write_mutex_exit();
-		if (flush_event.wait(lsn))
-			return;
-
-		goto loop;
 	}
 
 	log_mutex_enter();
@@ -1136,7 +1142,6 @@ loop:
 			      log_sys.write_lsn,
 			      log_sys.lsn));
 	if (flush_to_disk) {
-		log_sys.n_pending_flushes++;
 		log_sys.current_flush_lsn = log_sys.lsn;
 
 		if (log_sys.buf_free == log_sys.buf_next_to_write) {
@@ -1224,6 +1229,7 @@ flush:
 		log_write_flush_to_disk_low();
 		ib_uint64_t flush_lsn = log_sys.flushed_to_disk_lsn;
 		log_mutex_exit();
+		log_sys.n_pending_flushes = 0;
 		flush_event.set(flush_lsn);
 		innobase_mysql_log_notify(flush_lsn);
 	}
@@ -1996,7 +2002,7 @@ log_print(
 		ULINTPF " pending log flushes, "
 		ULINTPF " pending chkp writes\n"
 		ULINTPF " log i/o's done, %.2f log i/o's/second\n",
-		log_sys.n_pending_flushes,
+		log_sys.n_pending_flushes.load(),
 		log_sys.n_pending_checkpoint_writes,
 		log_sys.n_log_ios,
 		static_cast<double>(
