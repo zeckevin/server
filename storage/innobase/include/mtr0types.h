@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 1995, 2015, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2017, 2019, MariaDB Corporation.
+Copyright (c) 2017, 2020, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -216,10 +216,6 @@ enum mlog_id_t {
 	/** Table is being truncated. (Was used in 10.2 and 10.3;
 	not supported for crash-upgrade to 10.4 or later.) */
 	MLOG_TRUNCATE = 60,
-
-	/** notify that an index tree is being loaded without writing
-	redo log about individual pages */
-	MLOG_INDEX_LOAD = 61,
 
 	/** write DB_TRX_ID,DB_ROLL_PTR to a clustered index leaf page
 	of a ROW_FORMAT=COMPRESSED table */
