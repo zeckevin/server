@@ -791,198 +791,6 @@ static void rec_set_heap_no(rec_t *rec, ulint heap_no, bool compact)
                       REC_HEAP_NO_MASK, REC_HEAP_NO_SHIFT);
 }
 
-/***********************************************************//**
-Parses a log record of a record insert on a page.
-@return end of log record or NULL */
-ATTRIBUTE_COLD /* only used when crash-upgrading */
-const byte*
-page_cur_parse_insert_rec(
-/*======================*/
-	bool		is_short,/*!< in: true if short inserts */
-	const byte*	ptr,	/*!< in: buffer */
-	const byte*	end_ptr,/*!< in: buffer end */
-	buf_block_t*	block,	/*!< in: page or NULL */
-	dict_index_t*	index,	/*!< in: record descriptor */
-	mtr_t*		mtr)	/*!< in: mtr or NULL */
-{
-	ulint	origin_offset		= 0; /* remove warning */
-	ulint	end_seg_len;
-	ulint	mismatch_index		= 0; /* remove warning */
-	page_t*	page;
-	rec_t*	cursor_rec;
-	byte	buf1[1024];
-	byte*	buf;
-	const byte*	ptr2		= ptr;
-	ulint		info_and_status_bits = 0; /* remove warning */
-	page_cur_t	cursor;
-	mem_heap_t*	heap		= NULL;
-	offset_t	offsets_[REC_OFFS_NORMAL_SIZE];
-	offset_t*	offsets		= offsets_;
-	rec_offs_init(offsets_);
-
-	page = block ? buf_block_get_frame(block) : NULL;
-
-	if (is_short) {
-		cursor_rec = page_rec_get_prev(page_get_supremum_rec(page));
-	} else {
-		ulint	offset;
-
-		/* Read the cursor rec offset as a 2-byte ulint */
-
-		if (UNIV_UNLIKELY(end_ptr < ptr + 2)) {
-
-			return(NULL);
-		}
-
-		offset = mach_read_from_2(ptr);
-		ptr += 2;
-
-		cursor_rec = page + offset;
-
-		if (offset >= srv_page_size) {
-
-			recv_sys.found_corrupt_log = TRUE;
-
-			return(NULL);
-		}
-	}
-
-	end_seg_len = mach_parse_compressed(&ptr, end_ptr);
-
-	if (ptr == NULL) {
-
-		return(NULL);
-	}
-
-	if (end_seg_len >= srv_page_size << 1) {
-		recv_sys.found_corrupt_log = TRUE;
-
-		return(NULL);
-	}
-
-	if (end_seg_len & 0x1UL) {
-		/* Read the info bits */
-
-		if (end_ptr < ptr + 1) {
-
-			return(NULL);
-		}
-
-		info_and_status_bits = mach_read_from_1(ptr);
-		ptr++;
-
-		origin_offset = mach_parse_compressed(&ptr, end_ptr);
-
-		if (ptr == NULL) {
-
-			return(NULL);
-		}
-
-		ut_a(origin_offset < srv_page_size);
-
-		mismatch_index = mach_parse_compressed(&ptr, end_ptr);
-
-		if (ptr == NULL) {
-
-			return(NULL);
-		}
-
-		ut_a(mismatch_index < srv_page_size);
-	}
-
-	if (end_ptr < ptr + (end_seg_len >> 1)) {
-
-		return(NULL);
-	}
-
-	if (!block) {
-
-		return(const_cast<byte*>(ptr + (end_seg_len >> 1)));
-	}
-
-	ut_ad(!!page_is_comp(page) == dict_table_is_comp(index->table));
-	ut_ad(!buf_block_get_page_zip(block) || page_is_comp(page));
-
-	/* Read from the log the inserted index record end segment which
-	differs from the cursor record */
-
-	const bool is_leaf = page_is_leaf(page);
-
-	offsets = rec_get_offsets(cursor_rec, index, offsets, is_leaf,
-				  ULINT_UNDEFINED, &heap);
-
-	if (!(end_seg_len & 0x1UL)) {
-		info_and_status_bits = rec_get_info_and_status_bits(
-			cursor_rec, page_is_comp(page));
-		origin_offset = rec_offs_extra_size(offsets);
-		mismatch_index = rec_offs_size(offsets) - (end_seg_len >> 1);
-	}
-
-	end_seg_len >>= 1;
-
-	if (mismatch_index + end_seg_len < sizeof buf1) {
-		buf = buf1;
-	} else {
-		buf = static_cast<byte*>(
-			ut_malloc_nokey(mismatch_index + end_seg_len));
-	}
-
-	/* Build the inserted record to buf */
-
-        if (UNIV_UNLIKELY(mismatch_index >= srv_page_size)) {
-
-		ib::fatal() << "is_short " << is_short << ", "
-			<< "info_and_status_bits " << info_and_status_bits
-			<< ", offset " << page_offset(cursor_rec) << ","
-			" o_offset " << origin_offset << ", mismatch index "
-			<< mismatch_index << ", end_seg_len " << end_seg_len
-			<< " parsed len " << (ptr - ptr2);
-	}
-
-	memcpy(buf, rec_get_start(cursor_rec, offsets), mismatch_index);
-	memcpy(buf + mismatch_index, ptr, end_seg_len);
-	rec_set_heap_no(buf + origin_offset, PAGE_HEAP_NO_USER_LOW,
-			page_is_comp(page));
-
-	if (page_is_comp(page)) {
-		rec_set_info_and_status_bits(buf + origin_offset,
-					     info_and_status_bits);
-	} else {
-		rec_set_bit_field_1(buf + origin_offset, info_and_status_bits,
-				    REC_OLD_INFO_BITS,
-				    REC_INFO_BITS_MASK, REC_INFO_BITS_SHIFT);
-	}
-
-	page_cur_position(cursor_rec, block, &cursor);
-
-	offsets = rec_get_offsets(buf + origin_offset, index, offsets,
-				  is_leaf, ULINT_UNDEFINED, &heap);
-	/* The redo log record should only have been written
-	after the write was successful. */
-	if (block->page.zip.data) {
-		if (!page_cur_insert_rec_zip(&cursor, index,
-					     buf + origin_offset,
-					     offsets, mtr)) {
-			ut_error;
-		}
-	} else if (!page_cur_insert_rec_low(&cursor, index,
-					    buf + origin_offset,
-					    offsets, mtr)) {
-		ut_error;
-	}
-
-	if (buf != buf1) {
-
-		ut_free(buf);
-	}
-
-	if (UNIV_LIKELY_NULL(heap)) {
-		mem_heap_free(heap);
-	}
-
-	return(const_cast<byte*>(ptr + end_seg_len));
-}
-
 /** Reset PAGE_DIRECTION and PAGE_N_DIRECTION.
 @tparam compressed  whether the page is in ROW_FORMAT=COMPRESSED
 @param[in,out]  block   index page
@@ -1291,7 +1099,6 @@ page_cur_insert_rec_low(
 	ut_ad(fil_page_index_page_check(block->frame));
 	ut_ad(mach_read_from_8(PAGE_HEADER + PAGE_INDEX_ID + block->frame)
 	      == index->id
-	      || index->is_dummy
 	      || mtr->is_inside_ibuf());
 
 	ut_ad(!page_rec_is_supremum(current_rec));
@@ -1599,7 +1406,6 @@ page_cur_insert_rec_zip(
 	ut_ad(page_is_comp(page));
 	ut_ad(fil_page_index_page_check(page));
 	ut_ad(mach_read_from_8(page + PAGE_HEADER + PAGE_INDEX_ID) == index->id
-	      || index->is_dummy
 	      || mtr->is_inside_ibuf());
 	ut_ad(!page_get_instant(page));
 	ut_ad(!page_cur_is_after_last(cursor));
@@ -1645,17 +1451,7 @@ page_cur_insert_rec_zip(
 		rec_t*	cursor_rec	= page_cur_get_rec(cursor);
 #endif /* UNIV_DEBUG */
 
-#if 1 /* MDEV-12353 FIXME: skip this for the physical log format! */
-		/* If we are not writing compressed page images, we
-		must reorganize the page before attempting the
-		insert. */
-		if (recv_recovery_is_on()) {
-			/* Insert into the uncompressed page only.
-			The page reorganization or creation that we
-			would attempt outside crash recovery would
-			have been covered by a previous redo log record. */
-#endif
-		} else if (page_is_empty(page)) {
+		if (page_is_empty(page)) {
 			ut_ad(page_cur_is_before_first(cursor));
 
 			/* This is an empty page. Recreate it to
@@ -1711,38 +1507,8 @@ page_cur_insert_rec_zip(
 			cursor, index, rec, offsets, mtr);
 		mtr->set_log_mode(log_mode);
 
-		/* If recovery is on, this implies that the compression
-		of the page was successful during runtime. Had that not
-		been the case or had the redo logging of compressed
-		pages been enabled during runtime then we'd have seen
-		a MLOG_ZIP_PAGE_COMPRESS redo record. Therefore, we
-		know that we don't need to reorganize the page. We,
-		however, do need to recompress the page. That will
-		happen when the next redo record is read which must
-		be of type MLOG_ZIP_PAGE_COMPRESS_NO_DATA and it must
-		contain a valid compression level value.
-		This implies that during recovery from this point till
-		the next redo is applied the uncompressed and
-		compressed versions are not identical and
-		page_zip_validate will fail but that is OK because
-		we call page_zip_validate only after processing
-		all changes to a page under a single mtr during
-		recovery. */
 		if (insert_rec == NULL) {
-			/* Out of space.
-			This should never occur during crash recovery,
-			because the MLOG_COMP_REC_INSERT should only
-			be logged after a successful operation. */
-			ut_ad(!recv_recovery_is_on());
-			ut_ad(!index->is_dummy);
-#if 1 /* MDEV-12353 FIXME: skip this for the physical log format! */
-		} else if (recv_recovery_is_on()) {
-			/* This should be followed by
-			MLOG_ZIP_PAGE_COMPRESS_NO_DATA,
-			which should succeed. */
-			rec_offs_make_valid(insert_rec, index,
-					    page_is_leaf(page), offsets);
-#endif
+			/* Out of space. */
 		} else {
 			ulint	pos = page_rec_get_n_recs_before(insert_rec);
 			ut_ad(pos > 0);
@@ -2003,73 +1769,6 @@ no_direction:
 	return insert_rec;
 }
 
-/**********************************************************//**
-Parses a log record of copying a record list end to a new created page.
-@return end of log record or NULL */
-ATTRIBUTE_COLD /* only used when crash-upgrading */
-const byte*
-page_parse_copy_rec_list_to_created_page(
-/*=====================================*/
-	const byte*	ptr,	/*!< in: buffer */
-	const byte*	end_ptr,/*!< in: buffer end */
-	buf_block_t*	block,	/*!< in: page or NULL */
-	dict_index_t*	index,	/*!< in: record descriptor */
-	mtr_t*		mtr)	/*!< in: mtr or NULL */
-{
-	ulint		log_data_len;
-
-	ut_ad(index->is_dummy);
-
-	if (ptr + 4 > end_ptr) {
-
-		return(NULL);
-	}
-
-	log_data_len = mach_read_from_4(ptr);
-	ptr += 4;
-
-	const byte* rec_end = ptr + log_data_len;
-
-	if (rec_end > end_ptr) {
-
-		return(NULL);
-	}
-
-	if (!block) {
-
-		return(rec_end);
-	}
-
-	ut_ad(fil_page_index_page_check(block->frame));
-	/* This function is never invoked on the clustered index root page,
-	except in the redo log apply of
-	page_copy_rec_list_end_to_created_page().
-	For other pages, this field must be zero-initialized. */
-	ut_ad(!page_get_instant(block->frame)
-	      || !page_has_siblings(block->frame));
-
-	while (ptr < rec_end) {
-		ptr = page_cur_parse_insert_rec(true, ptr, end_ptr,
-						block, index, mtr);
-	}
-
-	ut_a(ptr == rec_end);
-
-	memset_aligned<2>(PAGE_HEADER + PAGE_LAST_INSERT + block->frame, 0, 2);
-	if (block->page.zip.data) {
-		memset_aligned<2>(PAGE_HEADER + PAGE_LAST_INSERT
-				  + block->page.zip.data, 0, 2);
-	}
-
-	if (!index->is_spatial()) {
-		page_direction_reset<true>(block,
-					   PAGE_HEADER + PAGE_DIRECTION_B
-					   + block->frame, mtr);
-	}
-
-	return(rec_end);
-}
-
 /*************************************************************//**
 Copies records from page to a newly created page, from a given record onward,
 including that record. Infimum and supremum records are not copied.
@@ -2243,62 +1942,6 @@ page_copy_rec_list_end_to_created_page(
 	memset_aligned<2>(PAGE_HEADER + PAGE_N_DIRECTION + new_page, 0, 2);
 }
 
-/***********************************************************//**
-Parses log record of a record delete on a page.
-@return pointer to record end or NULL */
-ATTRIBUTE_COLD /* only used when crash-upgrading */
-const byte*
-page_cur_parse_delete_rec(
-/*======================*/
-	const byte*	ptr,	/*!< in: buffer */
-	const byte*	end_ptr,/*!< in: buffer end */
-	buf_block_t*	block,	/*!< in: page or NULL */
-	dict_index_t*	index,	/*!< in: record descriptor */
-	mtr_t*		mtr)	/*!< in/out: mini-transaction,
-				or NULL if block=NULL */
-{
-	ulint		offset;
-	page_cur_t	cursor;
-
-	ut_ad(!block == !mtr);
-
-	if (end_ptr < ptr + 2) {
-
-		return(NULL);
-	}
-
-	/* Read the cursor rec offset as a 2-byte ulint */
-	offset = mach_read_from_2(ptr);
-	ptr += 2;
-
-	if (UNIV_UNLIKELY(offset >= srv_page_size)) {
-		recv_sys.found_corrupt_log = true;
-		return NULL;
-	}
-
-	if (block) {
-		page_t*		page		= buf_block_get_frame(block);
-		mem_heap_t*	heap		= NULL;
-		offset_t	offsets_[REC_OFFS_NORMAL_SIZE];
-		rec_t*		rec		= page + offset;
-		rec_offs_init(offsets_);
-
-		page_cur_position(rec, block, &cursor);
-		ut_ad(!buf_block_get_page_zip(block) || page_is_comp(page));
-
-		page_cur_delete_rec(&cursor, index,
-				    rec_get_offsets(rec, index, offsets_,
-						    page_rec_is_leaf(rec),
-						    ULINT_UNDEFINED, &heap),
-				    mtr);
-		if (UNIV_LIKELY_NULL(heap)) {
-			mem_heap_free(heap);
-		}
-	}
-
-	return(ptr);
-}
-
 /** Prepend a record to the PAGE_FREE list.
 @param[in,out]  block   index page
 @param[in,out]  rec     record being deleted
@@ -2372,7 +2015,6 @@ page_cur_delete_rec(
 	ut_ad(fil_page_index_page_check(block->frame));
 	ut_ad(mach_read_from_8(PAGE_HEADER + PAGE_INDEX_ID + block->frame)
 	      == index->id
-	      || index->is_dummy
 	      || mtr->is_inside_ibuf());
 	ut_ad(mtr->is_named_space(index->table->space));
 
@@ -2380,13 +2022,6 @@ page_cur_delete_rec(
 	ut_ad(page_rec_is_user_rec(current_rec));
 
 	if (page_get_n_recs(block->frame) == 1
-#if 1 /* MDEV-12353 TODO: skip this for the physical log format */
-	    /* Empty the page, unless we are applying the redo log
-	    during crash recovery. During normal operation, the
-	    page_create_empty() gets logged as one of MLOG_PAGE_CREATE,
-	    MLOG_COMP_PAGE_CREATE, MLOG_ZIP_PAGE_COMPRESS. */
-	    && !recv_recovery_is_on()
-#endif
 	    && !rec_is_alter_metadata(current_rec, *index)) {
 		/* Empty the page. */
 		ut_ad(page_is_leaf(block->frame));
