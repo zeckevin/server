@@ -48,8 +48,10 @@ recv_find_max_checkpoint(ulint* max_field)
 	MY_ATTRIBUTE((nonnull, warn_unused_result));
 
 /** Apply any buffered redo log to a page that was just read from a data file.
+@param[in,out]	space	tablespace
 @param[in,out]	bpage	buffer pool page */
-ATTRIBUTE_COLD void recv_recover_page(buf_page_t* bpage);
+ATTRIBUTE_COLD void recv_recover_page(fil_space_t* space, buf_page_t* bpage)
+	MY_ATTRIBUTE((nonnull));
 
 /** Start recovering from a redo log checkpoint.
 @see recv_recovery_from_checkpoint_finish
@@ -114,12 +116,12 @@ void recv_sys_justify_left_parsing_buf();
 
 /** Report an operation to create, delete, or rename a file during backup.
 @param[in]	space_id	tablespace identifier
-@param[in]	flags		tablespace flags (NULL if not create)
+@param[in]	create		whether the file is being created
 @param[in]	name		file name (not NUL-terminated)
 @param[in]	len		length of name, in bytes
 @param[in]	new_name	new file name (NULL if not rename)
 @param[in]	new_len		length of new_name, in bytes (0 if NULL) */
-extern void (*log_file_op)(ulint space_id, const byte* flags,
+extern void (*log_file_op)(ulint space_id, bool create,
 			   const byte* name, ulint len,
 			   const byte* new_name, ulint new_len);
 
@@ -171,13 +173,17 @@ struct page_recv_t
     /** log records are being applied on the page */
     RECV_BEING_PROCESSED
   } state= RECV_NOT_PROCESSED;
+  /** Latest written byte offset when applying the log records.
+  @see mtr_t::m_last_offset */
+  uint16_t last_offset= 1;
   /** log records for a page */
   class recs_t
   {
     /** The first log record */
-    log_rec_t *head= NULL;
+    log_rec_t *head= nullptr;
     /** The last log record */
-    log_rec_t *tail= NULL;
+    log_rec_t *tail= nullptr;
+    friend struct page_recv_t;
   public:
     /** Append a redo log snippet for the page
     @param recs log snippet */
@@ -190,10 +196,6 @@ struct page_recv_t
       tail= recs;
     }
 
-    /** Trim old log records for a page
-    @param start_lsn oldest log sequence number to preserve
-    @return whether the entire log was trimmed */
-    inline bool trim(lsn_t start_lsn);
     /** @return the last log snippet */
     const log_rec_t* last() const { return tail; }
 
@@ -216,6 +218,10 @@ struct page_recv_t
 #endif
   } log;
 
+  /** Trim old log records for a page
+  @param start_lsn oldest log sequence number to preserve
+  @return whether the entire log was trimmed */
+  inline bool trim(lsn_t start_lsn);
   /** Ignore any earlier redo log records for this page. */
   inline void will_not_read();
   /** @return whether the log records for the page are being processed */
@@ -345,8 +351,25 @@ public:
 			const byte* body, const byte* rec_end, lsn_t lsn,
 			lsn_t end_lsn);
 
-	/** Clear a fully processed set of stored redo log records. */
-	inline void clear();
+  /** Register a redo log snippet for a page.
+  @param page_id  page identifier
+  @param start_lsn start LSN of the mini-transaction
+  @param lsn      @see mtr_t::commit_lsn()
+  @param l        redo log snippet @see log_t::FORMAT_10_5
+  @param len      length of l, in bytes */
+  inline void add(const page_id_t page_id, lsn_t start_lsn, lsn_t lsn,
+                  const byte *l, size_t len);
+
+  /** Parse and register one mini-transaction in log_t::FORMAT_10_5.
+  @param checkpoint_lsn  the log sequence number of the latest checkpoint
+  @param store           whether to store the records
+  @param apply           whether to apply file-level log records
+  @return whether FILE_CHECKPOINT record was seen the first time,
+  or corruption was noticed */
+  inline bool parse(lsn_t checkpoint_lsn, store_t store, bool apply);
+
+  /** Clear a fully processed set of stored redo log records. */
+  inline void clear();
 
 	/** Determine whether redo log recovery progress should be reported.
 	@param[in]	time	the current time
@@ -366,7 +389,7 @@ public:
   @param[in] len length of the data to be stored
   @param[in] store_recv whether to store recv_t object
   @return pointer to len bytes of memory (never NULL) */
-  inline byte *alloc(size_t len, bool store_recv= false);
+  inline void *alloc(size_t len, bool store_recv= false);
 
 #ifdef UNIV_DEBUG
 private:

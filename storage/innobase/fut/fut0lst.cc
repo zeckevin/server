@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 1995, 2016, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2019, MariaDB Corporation.
+Copyright (c) 2019, 2020, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -45,8 +45,12 @@ static void flst_add_to_empty(buf_block_t *base, uint16_t boffset,
 
   /* Update first and last fields of base node */
   flst_write_addr(*base, base->frame + boffset + FLST_FIRST, addr, mtr);
-  /* MDEV-12353 TODO: use MEMMOVE record */
-  flst_write_addr(*base, base->frame + boffset + FLST_LAST, addr, mtr);
+  memcpy(base->frame + boffset + FLST_LAST, base->frame + boffset + FLST_FIRST,
+	 FIL_ADDR_SIZE);
+  /* Initialize FLST_LAST by (MEMMOVE|0x80,offset,FIL_ADDR_SIZE,source)
+  which is 4 bytes, or less than FIL_ADDR_SIZE. */
+  mtr->memmove(*base, boffset + FLST_LAST, boffset + FLST_FIRST,
+               FIL_ADDR_SIZE);
 
   /* Set prev and next fields of node to add */
   flst_zero_addr(*add, add->frame + aoffset + FLST_PREV, mtr);

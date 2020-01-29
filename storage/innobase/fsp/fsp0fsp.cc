@@ -577,8 +577,12 @@ void fsp_header_init(fil_space_t* space, ulint size, mtr_t* mtr)
 				 + block->frame, space->id);
 	ut_ad(0 == mach_read_from_4(FSP_HEADER_OFFSET + FSP_NOT_USED
 				    + block->frame));
-	mtr->write<4>(*block, FSP_HEADER_OFFSET + FSP_SIZE + block->frame,
-		      size);
+	/* recv_sys_t::parse() expects to find a WRITE record that
+	covers all 4 bytes. Therefore, we must specify mtr_t::FORCED
+	in order to avoid optimizing away any unchanged most
+	significant bytes of FSP_SIZE. */
+	mtr->write<4,mtr_t::FORCED>(*block, FSP_HEADER_OFFSET + FSP_SIZE
+				   + block->frame, size);
 	ut_ad(0 == mach_read_from_4(FSP_HEADER_OFFSET + FSP_FREE_LIMIT
 				    + block->frame));
 	mtr->write<4,mtr_t::OPT>(*block, FSP_HEADER_OFFSET + FSP_SPACE_FLAGS
@@ -636,8 +640,12 @@ fsp_try_extend_data_file_with_pages(
 
 	success = fil_space_extend(space, page_no + 1);
 	/* The size may be less than we wanted if we ran out of disk space. */
-	mtr->write<4>(*header, FSP_HEADER_OFFSET + FSP_SIZE + header->frame,
-		      space->size);
+	/* recv_sys_t::parse() expects to find a WRITE record that
+	covers all 4 bytes. Therefore, we must specify mtr_t::FORCED
+	in order to avoid optimizing away any unchanged most
+	significant bytes of FSP_SIZE. */
+	mtr->write<4,mtr_t::FORCED>(*header, FSP_HEADER_OFFSET + FSP_SIZE
+				    + header->frame, space->size);
 	space->size_in_header = space->size;
 
 	return(success);
@@ -770,8 +778,12 @@ fsp_try_extend_data_file(fil_space_t *space, buf_block_t *header, mtr_t *mtr)
 
 	space->size_in_header = ut_2pow_round(space->size, (1024 * 1024) / ps);
 
-	mtr->write<4>(*header, FSP_HEADER_OFFSET + FSP_SIZE + header->frame,
-		      space->size_in_header);
+	/* recv_sys_t::parse() expects to find a WRITE record that
+	covers all 4 bytes. Therefore, we must specify mtr_t::FORCED
+	in order to avoid optimizing away any unchanged most
+	significant bytes of FSP_SIZE. */
+	mtr->write<4,mtr_t::FORCED>(*header, FSP_HEADER_OFFSET + FSP_SIZE
+				    + header->frame, space->size_in_header);
 
 	return(size_increase);
 }

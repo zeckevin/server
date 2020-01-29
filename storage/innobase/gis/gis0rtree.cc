@@ -300,8 +300,9 @@ rtr_update_mbr_field(
 			memcpy(rec, node_ptr->fields[0].data, DATA_MBR_LEN);
 			page_zip_write_rec(block, rec, index, offsets, 0, mtr);
 		} else {
-			mtr->memcpy(block, page_offset(rec),
-				    node_ptr->fields[0].data, DATA_MBR_LEN);
+			mtr->memcpy<mtr_t::OPT>(*block, rec,
+						node_ptr->fields[0].data,
+						DATA_MBR_LEN);
 		}
 
 		if (cursor2) {

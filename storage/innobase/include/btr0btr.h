@@ -403,6 +403,13 @@ btr_write_autoinc(dict_index_t* index, ib_uint64_t autoinc, bool reset = false)
 @param[in,out]	mtr	mini-transaction */
 void btr_set_instant(buf_block_t* root, const dict_index_t& index, mtr_t* mtr);
 
+/** Reset the table to the canonical format on ROLLBACK of instant ALTER TABLE.
+@param[in]      index   clustered index with instant ALTER TABLE
+@param[in]      all     whether to reset FIL_PAGE_TYPE as well
+@param[in,out]  mtr     mini-transaction */
+ATTRIBUTE_COLD __attribute__((nonnull))
+void btr_reset_instant(const dict_index_t &index, bool all, mtr_t *mtr);
+
 /*************************************************************//**
 Makes tree one level higher by splitting the root, and inserts
 the tuple. It is assumed that mtr contains an x-latch on the tree.
