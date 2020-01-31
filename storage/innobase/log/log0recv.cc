@@ -109,18 +109,43 @@ struct log_phys_t : public log_rec_t
   /** start LSN of the mini-transaction (not necessarily of this record) */
   const lsn_t start_lsn;
 #endif
+private:
+  /** length  of the record, in bytes */
+  uint16_t len;
 
+  /** @return start of the log records */
+  byte *begin() { return reinterpret_cast<byte*>(this + 1); }
+  /** @return start of the log records */
+  const byte *begin() const { return const_cast<log_phys_t*>(this)->begin(); }
+  /** @return end of the log records */
+  byte *end() { byte *e= begin() + len; ut_ad(!*e); return e; }
+  /** @return end of the log records */
+  const byte *end() const { return const_cast<log_phys_t*>(this)->end(); }
+
+public:
   /** Constructor.
   @param start_lsn start LSN of the mini-transaction
   @param lsn  mtr_t::commit_lsn() of the mini-transaction
   @param recs the first log record for the page in the mini-transaction
-  @param len  length of recs, in bytes */
-  log_phys_t(lsn_t start_lsn, lsn_t lsn, const byte *recs, size_t len) :
-    log_rec_t(lsn), start_lsn(start_lsn)
+  @param size length of recs, in bytes */
+  log_phys_t(lsn_t start_lsn, lsn_t lsn, const byte *recs, size_t size) :
+    log_rec_t(lsn), start_lsn(start_lsn), len(static_cast<uint16_t>(size))
   {
     ut_ad(start_lsn);
-    reinterpret_cast<byte*>
-      (memcpy(reinterpret_cast<void*>(this + 1), recs, len))[len]= 0;
+    ut_ad(len == size);
+    ut_ad(size + sizeof *this < srv_page_size);
+    reinterpret_cast<byte*>(memcpy(begin(), recs, size))[size]= 0;
+  }
+
+  /** @return whether the record ends at a specific address */
+  bool ends_at(const void *addr) const { return end() == addr; }
+
+  /** Append a record to the log. */
+  void append(const byte *recs, size_t size)
+  {
+    ut_ad(size + len + sizeof *this < srv_page_size);
+    reinterpret_cast<byte*>(memcpy(end(), recs, size))[size]= 0;
+    len+= static_cast<uint16_t>(size);
   }
 
   /** The status of apply() */
@@ -1399,7 +1424,7 @@ inline void recv_sys_t::add(const page_id_t page_id,
                             lsn_t start_lsn, lsn_t lsn, const byte *l,
                             size_t len)
 {
-  ut_ad(log_sys.is_physical());
+  ut_ad(mutex_own(&mutex));
   std::pair<map::iterator, bool> p= pages.emplace(map::value_type
                                                   (page_id, page_recv_t()));
   page_recv_t& recs= p.first->second;
@@ -1411,7 +1436,20 @@ inline void recv_sys_t::add(const page_id_t page_id,
     mlog_init.add(page_id, lsn); /* MDEV-12353 FIXME: remove this! */
     /* fall through */
   default:
-    /* MDEV-12353 FIXME: try to combine adjacent records! */
+    if (log_phys_t *tail= static_cast<log_phys_t*>(recs.log.last()))
+    {
+      buf_block_t *block= UT_LIST_GET_LAST(blocks);
+      ut_ad(block);
+      byte *block_end= block->frame + block->modify_clock;
+      if (tail->start_lsn == start_lsn && tail->ends_at(block_end) &&
+          static_cast<ulong>((block->modify_clock + len - 1) <= srv_page_size))
+      {
+        /* Append to the preceding record for the page */
+        tail->append(l, len);
+        block->modify_clock+= len;
+        return;
+      }
+    }
     void* buf= alloc(sizeof(log_phys_t) + len + 1);
     ut_d(find_block(buf)->fix());
     recs.log.append(new (buf) log_phys_t(start_lsn, lsn, l, len));

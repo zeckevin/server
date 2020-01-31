@@ -186,6 +186,8 @@ struct page_recv_t
 
     /** @return the last log snippet */
     const log_rec_t* last() const { return tail; }
+    /** @return the last log snippet */
+    log_rec_t* last() { return tail; }
 
     class iterator
     {
