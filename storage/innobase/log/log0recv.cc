@@ -1503,7 +1503,13 @@ eom_found:
     return false;
 
   ut_d(std::set<page_id_t> freed);
-#if 0 /* MDEV-12353 FIXME: enable this and remove mlog_init! */
+#if 0 && defined UNIV_DEBUG
+  /* Pages that have been modified in this mini-transaction.
+  If a mini-transaction writes INIT_PAGE for a page, it should not have
+  written any log records for the page. Unfortunately, this does not
+  hold for ROW_FORMAT=COMPRESSED pages, because page_zip_compress()
+  can be invoked in a pessimistic operation, even after log has
+  been written for other pages. */
   ut_d(std::set<page_id_t> modified);
 #endif
 
@@ -1618,9 +1624,6 @@ same_page:
         last_offset= FIL_PAGE_TYPE;
         if (UNIV_UNLIKELY(rlen != 0))
           goto record_corrupted;
-#if 0 /* MDEV-12353 FIXME: enable this and remove mlog_init! */
-        ut_ad(modified.find(id) == modified.end());
-#endif
         break;
       case INIT_INDEX_PAGE:
         if (UNIV_UNLIKELY(rlen != 1))
@@ -1700,8 +1703,17 @@ same_page:
         last_offset+= llen;
         break;
       }
-#if 0 /* MDEV-12353 FIXME: enable this and remove mlog_init! */
-      ut_d(modified.emplace(id));
+#if 0 && defined UNIV_DEBUG
+      switch (b & 0x70) {
+      case RESERVED:
+      case OPTION:
+        ut_ad(0); /* we did "continue" earlier */
+        break;
+      case FREE_PAGE:
+        break;
+      default:
+        ut_ad(modified.emplace(id).second || (b & 0x70) != INIT_PAGE);
+      }
 #endif
       switch (store) {
       case STORE_NO:
