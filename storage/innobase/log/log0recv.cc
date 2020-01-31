@@ -826,15 +826,6 @@ void recv_sys_t::debug_free()
 	mutex_exit(&mutex);
 }
 
-inline size_t recv_sys_t::get_free_len() const
-{
-  if (UT_LIST_GET_LEN(blocks) == 0)
-    return 0;
-
-  return srv_page_size -
-    static_cast<size_t>(UT_LIST_GET_FIRST(blocks)->modify_clock);
-}
-
 inline void* recv_sys_t::alloc(size_t len)
 {
   ut_ad(mutex_own(&mutex));

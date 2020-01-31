@@ -378,9 +378,6 @@ public:
   inline void free(const void *data) const;
 #endif
 
-  /** @return the free length of the latest alloc() block, in bytes */
-  inline size_t get_free_len() const;
-
   /** Remove records for a corrupted page.
   This function should only be called when innodb_force_recovery is set.
   @param page_id  corrupted page identifier */
