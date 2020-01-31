@@ -589,17 +589,10 @@ void log_t::create()
   }
 }
 
-
 class file_os_io final: public log_t::files::file_io
 {
   pfs_os_file_t fd;
-public:
-  ~file_os_io()
-  {
-    if (fd != OS_FILE_CLOSED)
-      close();
-  }
-  dberr_t open(const char* path) final
+  file_os_io(const char *path, dberr_t &err)
   {
     bool success;
     fd= os_file_create(innodb_log_file_key, path,
@@ -610,7 +603,22 @@ public:
     if (srv_file_flush_method == SRV_O_DSYNC)
       durable_writes= true;
 
-    return success ? DB_SUCCESS : DB_ERROR;
+    err= success ? DB_SUCCESS : DB_ERROR;
+  }
+
+public:
+  static std::unique_ptr<file_os_io> create_on_heap(const char *path)
+  {
+    dberr_t err;
+    auto p = std::unique_ptr<file_os_io>(new file_os_io(path, err));
+    if (err)
+	    return {};
+    return p;
+  }
+  ~file_os_io()
+  {
+    if (fd != OS_FILE_CLOSED)
+      close();
   }
   dberr_t close() final
   {
@@ -638,13 +646,7 @@ class file_mmap_io final: public log_t::files::file_io
 {
   File fd{-1};
   span<byte> area;
-public:
-  ~file_mmap_io()
-  {
-    if (fd != -1)
-      close();
-  }
-  dberr_t open(const char* path) final
+  file_mmap_io(const char *path, dberr_t &err)
   {
     fd= mysql_file_open(innodb_log_file_key, path,
                         srv_read_only_mode ? O_RDONLY : O_RDWR, MYF(MY_WME));
@@ -658,15 +660,31 @@ public:
             0, length, srv_read_only_mode ? PROT_READ : PROT_READ | PROT_WRITE,
             MAP_SHARED, fd, 0);
         if (addr != MAP_FAILED)
-	{
+        {
           area= {static_cast<byte *>(addr), length};
-          return DB_SUCCESS;
-	}
+          err= DB_SUCCESS;
+          return;
+        }
       }
       mysql_file_close(fd, MYF(MY_WME));
       fd= -1;
     }
-    return DB_ERROR;
+    err= DB_ERROR;
+  }
+
+public:
+  static std::unique_ptr<file_mmap_io> create_on_heap(const char *path)
+  {
+    dberr_t err;
+    auto p = std::unique_ptr<file_mmap_io>(new file_mmap_io(path, err));
+    if (err)
+	    return {};
+    return p;
+  }
+  ~file_mmap_io()
+  {
+    if (fd != -1)
+      close();
   }
   dberr_t close() final
   {
@@ -702,11 +720,8 @@ public:
 class file_pmem_io final: public log_t::files::file_io
 {
   span<byte> area;
-public:
-  dberr_t open(const char* path) final
+  file_pmem_io(const char *path, dberr_t &err)
   {
-    ut_ad(area.empty());
-
     int is_pmem;
     size_t length;
     void *addr= pmem_map_file(path, 0, 0, 0, &length, &is_pmem);
@@ -715,8 +730,18 @@ public:
                     "storage. Beware of potential data loss: sync is no-op.";
     durable_writes= is_pmem;
     if (addr)
-      area= {static_cast<byte*>(addr), length};
-    return addr ? DB_SUCCESS : DB_ERROR;
+      area= {static_cast<byte *>(addr), length};
+    err= addr ? DB_SUCCESS : DB_ERROR;
+  }
+
+public:
+  static std::unique_ptr<file_pmem_io> create_on_heap(const char *path)
+  {
+    dberr_t err;
+    auto p = std::unique_ptr<file_pmem_io>(new file_pmem_io(path, err));
+    if (err)
+	    return {};
+    return p;
   }
   dberr_t close() final
   {
@@ -755,23 +780,26 @@ void log_t::files::open_files()
   {
     switch (innodb_log_io_method)
     {
-      case 1: files.emplace_back(new file_mmap_io); break;
+      case 1:
+        files.push_back(file_mmap_io::create_on_heap(name.c_str()));
+        break;
       case 2:
       {
 #ifdef HAVE_PMEM
-        files.emplace_back(new file_pmem_io);
+        files.push_back(file_pmem_io::create_on_heap(name.c_str()));
 #else
         ib::warn() << "The redo log \"pmem\" IO method is unavailable, "
                       "falling back to \"mmap\" IO.";
-        files.emplace_back(new file_mmap_io);
+        files.push_back(file_mmap_io::create_on_heap(name.c_str()));
 #endif
         break;
       }
-      default: files.emplace_back(new file_os_io); break;
+      default:
+        files.push_back(file_os_io::create_on_heap(name.c_str()));
+	break;
     }
-    ut_a(files.back().get());
 
-    if (files.back()->open(name.c_str()))
+    if (!files.back().get())
       ib::fatal() << "open(" << name << ") failed";
   }
 }

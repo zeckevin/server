@@ -531,7 +531,6 @@ struct log_t{
       file_io& operator=(const file_io&&)= delete;
 
       virtual ~file_io() {}
-      virtual dberr_t open(const char* path)= 0;
       virtual dberr_t close()= 0;
       virtual dberr_t read(os_offset_t offset, span<byte> buf)= 0;
       virtual dberr_t write(const char *path, os_offset_t offset,
