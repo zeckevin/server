@@ -330,10 +330,9 @@ public:
       goto record_corrupted;
     }
   }
-#ifdef UNIV_DEBUG
-  /** Declare the log snippet freed in the buffer pool */
+
+  /** Free the log snippet */
   void free() const { recv_sys.free(this); }
-#endif /* UNIV_DEBUG */
 };
 
 
@@ -813,16 +812,15 @@ inline void recv_sys_t::clear()
   ut_ad(mutex_own(&mutex));
   apply_log_recs= false;
   apply_batch_on= false;
+  ut_ad(!after_apply || !UT_LIST_GET_LAST(blocks));
   pages.clear();
 
   for (buf_block_t *block= UT_LIST_GET_LAST(blocks); block; )
   {
     buf_block_t *prev_block= UT_LIST_GET_PREV(unzip_LRU, block);
     ut_ad(buf_block_get_state(block) == BUF_BLOCK_MEMORY);
-    /* Check buf_fix_count after applying all buffered redo log records */
-    ut_ad(!after_apply || !block->page.buf_fix_count);
     UT_LIST_REMOVE(blocks, block);
-    ut_d(block->page.buf_fix_count= 0);
+    UNIV_MEM_INVALID(block->frame, len);
     buf_block_free(block);
     block= prev_block;
   }
@@ -862,37 +860,57 @@ inline void* recv_sys_t::alloc(size_t len)
   {
 create_block:
     block= buf_block_alloc(nullptr);
-    block->modify_clock= len;
+    block->page.access_time= 1U << 16 | static_cast<uint16_t>(len);
     UT_LIST_ADD_FIRST(blocks, block);
+    UNIV_MEM_INVALID(block->frame, len);
+    UNIV_MEM_FREE(block->frame + len, srv_page_size - len);
     return block->frame;
   }
 
-  size_t free_offset= static_cast<size_t>(block->modify_clock);
-  ut_ad(free_offset <= srv_page_size);
-
-  if (free_offset + len > srv_page_size)
+  size_t free_offset= static_cast<uint16_t>(block->page.access_time);
+  if (UNIV_UNLIKELY(!free_offset))
+  {
+    ut_ad(srv_page_size == 65536);
     goto create_block;
-  block->modify_clock= free_offset + len;
-  return block->frame + free_offset;
+  }
+  ut_ad(free_offset <= srv_page_size);
+  free_offset+= len;
+
+  if (free_offset > srv_page_size)
+    goto create_block;
+
+  block->page.access_time= ((block->page.access_time + (1U << 16)) &
+                            (~0U << 16)) | static_cast<uint16_t>(free_offset);
+  UNIV_MEM_INVALID(block->frame + free_offset - len, len);
+  return block->frame + free_offset - len;
 }
 
-#ifdef UNIV_DEBUG
-inline buf_block_t *recv_sys_t::find_block(const void* data) const
+
+/** Free a redo log snippet.
+@param data buffer returned by alloc() */
+inline void recv_sys_t::free(const void *data)
 {
   data= page_align(data);
+  ut_ad(mutex_own(&mutex));
   for (buf_block_t *block= UT_LIST_GET_LAST(blocks);
        block; block = UT_LIST_GET_PREV(unzip_LRU, block))
+  {
+    ut_ad(buf_block_get_state(block) == BUF_BLOCK_MEMORY);
+    ut_ad(block->page.access_time > 1U << 16);
     if (block->frame == data)
-      return block;
+    {
+      if (!((block->page.access_time -= 1U << 16) >> 16))
+      {
+        UT_LIST_REMOVE(blocks, block);
+        UNIV_MEM_INVALID(block->frame, srv_page_size);
+        buf_block_free(block);
+      }
+      return;
+    }
+  }
   ut_ad(0);
-  return nullptr;
 }
 
-inline void recv_sys_t::free(const void *data) const
-{
-  find_block(data)->unfix();
-}
-#endif
 
 /** Read a log segment to log_sys.buf.
 @param[in,out]	start_lsn	in: read area start,
@@ -1376,31 +1394,33 @@ recv_calc_lsn_on_data_add(
 	return(lsn + lsn_len);
 }
 
-/** Trim old log records for a page
+/** Trim old log records for a page.
 @param start_lsn oldest log sequence number to preserve
-@return whether the entire log was trimmed */
+@return whether all the log for the page was trimmed */
 inline bool page_recv_t::trim(lsn_t start_lsn)
 {
-  for (log_rec_t** prev= &log.head; *prev; *prev= (*prev)->next)
+  while (log.head)
   {
-    if ((*prev)->lsn >= start_lsn) return false;
+    if (log.head->lsn >= start_lsn) return false;
     last_offset= 1; /* the next record must not be same_page */
-    ut_d(static_cast<const log_phys_t*>(*prev)->free());
+    log_rec_t *next= log.head->next;
+    static_cast<const log_phys_t*>(log.head)->free();
+    log.head= next;
   }
+  log.tail= nullptr;
   return true;
 }
 
-#ifdef UNIV_DEBUG
-inline void page_recv_t::recs_t::free() const
-{
-  for (const log_rec_t *l= head; l; l= l->next)
-    static_cast<const log_phys_t*>(l)->free();
-}
-#endif
 
 inline void page_recv_t::recs_t::clear()
 {
-  ut_d(free());
+  ut_ad(mutex_own(&recv_sys.mutex));
+  for (const log_rec_t *l= head; l; )
+  {
+    log_rec_t *next= l->next;
+    static_cast<const log_phys_t*>(l)->free();
+    l= next;
+  }
   head= tail= nullptr;
 }
 
@@ -1451,7 +1471,6 @@ inline void recv_sys_t::add(const page_id_t page_id,
       }
     }
     void* buf= alloc(sizeof(log_phys_t) + len + 1);
-    ut_d(find_block(buf)->fix());
     recs.log.append(new (buf) log_phys_t(start_lsn, lsn, l, len));
   }
 }
@@ -2042,8 +2061,6 @@ set_start_lsn:
 		}
 	}
 
-	ut_d(p->second.log.free());
-
 	if (start_lsn) {
 		ut_ad(end_lsn >= start_lsn);
 		mach_write_to_8(FIL_PAGE_LSN + frame, end_lsn);
@@ -2084,7 +2101,6 @@ set_start_lsn:
 
 	ut_ad(p->second.is_being_processed());
 	ut_ad(!recv_sys.pages.empty());
-	recv_sys.pages.erase(p);
 
 	if (recv_sys.report(now)) {
 		const ulint n = recv_sys.pages.size();
@@ -2100,12 +2116,12 @@ This function should only be called when innodb_force_recovery is set.
 ATTRIBUTE_COLD void recv_sys_t::free_corrupted_page(page_id_t page_id)
 {
   mutex_enter(&mutex);
-#ifdef UNIV_DEBUG
-  map::const_iterator p= pages.find(page_id);
+  map::iterator p= pages.find(page_id);
   if (p != pages.end())
-    p->second.log.free();
-#endif
-  pages.erase(page_id);
+  {
+    p->second.log.clear();
+    pages.erase(p);
+  }
   mutex_exit(&mutex);
 }
 
@@ -2136,6 +2152,8 @@ void recv_recover_page(fil_space_t* space, buf_page_t* bpage)
 		if (p != recv_sys.pages.end()
 		    && !p->second.is_being_processed()) {
 			recv_recover_page(block, mtr, p, space);
+			p->second.log.clear();
+			recv_sys.pages.erase(p);
 			goto func_exit;
 		}
 	}
@@ -2268,8 +2286,15 @@ void recv_apply_hashed_log_recs(bool last_batch)
 			} else {
 				mtr.commit();
 				recv_read_in_area(page_id);
+				break;
 			}
-			break;
+		ignore:
+			{
+				recv_sys_t::map::iterator r = p++;
+				r->second.log.clear();
+				recv_sys.pages.erase(r);
+			}
+			continue;
 		case page_recv_t::RECV_WILL_NOT_READ:
 			mlog_init_t::init& i = mlog_init.last(page_id);
 			const lsn_t end_lsn = recs.log.last()->lsn;
@@ -2278,11 +2303,7 @@ void recv_apply_hashed_log_recs(bool last_batch)
 					 << page_id
 					 << " LSN " << end_lsn
 					 << " < " << i.lsn);
-ignore:
-				recv_sys_t::map::iterator r = p++;
-				ut_d(r->second.log.free());
-				recv_sys.pages.erase(r);
-				continue;
+				goto ignore;
 			}
 
 			fil_space_t* space = fil_space_acquire_for_io(
@@ -2312,6 +2333,8 @@ ignore:
 				mtr.x_latch_at_savepoint(0, block);
 				recv_recover_page(block, mtr, p, space, &i);
 				ut_ad(mtr.has_committed());
+				p->second.log.clear();
+				recv_sys.pages.erase(p);
 			}
 
 			space->release_for_io();
@@ -2798,6 +2821,8 @@ recv_validate_tablespace(bool rescan, bool& missing_tablespace)
 {
 	dberr_t err = DB_SUCCESS;
 
+	mutex_enter(&recv_sys.mutex);
+
 	for (recv_sys_t::map::iterator p = recv_sys.pages.begin();
 	     p != recv_sys.pages.end();) {
 		ut_ad(!p->second.log.empty());
@@ -2820,7 +2845,7 @@ next:
 			/* fall through */
 		case file_name_t::DELETED:
 			recv_sys_t::map::iterator r = p++;
-			ut_d(r->second.log.free(););
+			r->second.log.clear();
 			recv_sys.pages.erase(r);
 			continue;
 		}
@@ -2828,6 +2853,8 @@ next:
 	}
 
 	if (err != DB_SUCCESS) {
+func_exit:
+		mutex_exit(&recv_sys.mutex);
 		return(err);
 	}
 
@@ -2862,7 +2889,8 @@ next:
 		missing_tablespace = false;
 	}
 
-	return DB_SUCCESS;
+	err = DB_SUCCESS;
+	goto func_exit;
 }
 
 /** Check if all tablespaces were found for crash recovery.
